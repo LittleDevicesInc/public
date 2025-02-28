@@ -485,7 +485,7 @@ def print_usage():
     print("\nA comprehensive tool for initiating and analyzing ping log files.")
     print("Detects issues such as missed pings, abnormal response times, and network latency patterns.")
     print("\nUsage:")
-    print("  python ping-tool.py [options] [files/patterns]")
+    print("  ping-tool [options] [files/patterns]")
     print("\nOptions:")
     print("  -h, --help                   Show this help message and exit")
     print("  -o FILE, --output=FILE       Write report to FILE")
@@ -497,21 +497,21 @@ def print_usage():
     print("  --no-timestamp              Don't use -D timestamp option when starting a ping")
     print("\nExamples:")
     print("  # Start a ping to a target and save the output:")
-    print("  python ping-tool.py --ping 192.168.1.1")
+    print("  ping-tool --ping 192.168.1.1")
     print("\n  # Start a ping without timestamps:")
-    print("  python ping-tool.py --ping google.com --no-timestamp")
+    print("  ping-tool --ping google.com --no-timestamp")
     print("\n  # Start a ping with a specific count and interval:")
-    print("  python ping-tool.py --ping ap-123.local --count 100 --interval 0.5")
+    print("  ping-tool --ping ap-123.local --count 100 --interval 0.5")
     print("\n  # Analyze all ping files in current directory:")
-    print("  python ping-tool.py")
+    print("  ping-tool")
     print("\n  # Analyze a specific file:")
-    print("  python ping-tool.py ping-ap1.txt")
+    print("  ping-tool ping-ap1.txt")
     print("\n  # Analyze multiple specific files:")
-    print("  python ping-tool.py ping-ap1.txt ping-ap2.txt")
+    print("  ping-tool ping-ap1.txt ping-ap2.txt")
     print("\n  # Analyze files matching a pattern and save report:")
-    print("  python ping-tool.py -p \"ping-ap*.txt\" -o report.txt")
+    print("  ping-tool -p \"ping-ap*.txt\" -o report.txt")
     print("\n  # Mix specific files and patterns:")
-    print("  python ping-tool.py ping-ap1.txt \"ping-switch*.txt\"")
+    print("  ping-tool ping-ap1.txt \"ping-switch*.txt\"")
     print("\nFile Categories:")
     print("  Files are automatically categorized based on naming patterns:")
     print("  - MAC: Files containing a MAC address in any format/case")
@@ -624,6 +624,11 @@ def analyze_ping_files():
 
     # Filter out non-text files
     files = [f for f in files if f.endswith(('.txt', '.log'))]
+
+    # If no files found and no specific operation requested, show help instead of error
+    if not files and not args["ping_target"] and not args["output_file"] and not args["pattern"]:
+        print_usage()
+        return None
 
     # Make sure we have files to analyze
     if not files:
