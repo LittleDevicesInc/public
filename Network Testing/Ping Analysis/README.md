@@ -26,10 +26,43 @@ No installation required. Just ensure you have Python 3.6+ installed.
 python --version
 ```
 
+### Making the Tool Directly Executable
+
+You can make the tool directly executable without typing "python" every time:
+
+1. Make the script executable:
+   ```bash
+   chmod +x ping-tool.py
+   ```
+
+2. Create a symbolic link to a directory in your PATH (optional):
+   ```bash
+   # Create a bin directory if it doesn't exist
+   mkdir -p ~/bin
+
+   # Create a symbolic link without the .py extension
+   ln -sf "$(pwd)/ping-tool.py" ~/bin/ping-tool
+
+   # Make sure ~/bin is in your PATH
+   echo 'export PATH="$HOME/bin:$PATH"' >> ~/.bashrc
+   source ~/.bashrc
+   ```
+
+3. Now you can run the tool directly:
+   ```bash
+   ping-tool --help
+   ```
+
 ## Usage
 
 ```bash
 python ping-tool.py [options] [files/patterns]
+```
+
+Or if you've made it executable:
+
+```bash
+ping-tool [options] [files/patterns]
 ```
 
 ### Options
@@ -45,52 +78,54 @@ python ping-tool.py [options] [files/patterns]
 
 ### Examples
 
+Each example below can be run either with `python ping-tool.py` or just `ping-tool` if you've made it executable.
+
 #### Start a ping to a target and save the output
 
 ```bash
-python ping-tool.py --ping 192.168.1.1
+ping-tool --ping 192.168.1.1
 ```
 
 #### Start a ping without timestamps
 
 ```bash
-python ping-tool.py --ping google.com --no-timestamp
+ping-tool --ping google.com --no-timestamp
 ```
 
 #### Start a ping with a specific count and interval
 
 ```bash
-python ping-tool.py --ping ap-123.local --count 100 --interval 0.5
+ping-tool --ping ap-123.local --count 100 --interval 0.5
 ```
 
 #### Analyze all ping files in current directory
 
 ```bash
-python ping-tool.py
+ping-tool
 ```
 
 #### Analyze a specific file
 
 ```bash
-python ping-tool.py ping-ap1.txt
+ping-tool ping-ap1.txt
 ```
 
 #### Analyze multiple specific files
 
 ```bash
-python ping-tool.py ping-ap1.txt ping-ap2.txt
+ping-tool ping-ap1.txt ping-ap2.txt
 ```
 
 #### Analyze files matching a pattern and save report
 
 ```bash
-python ping-tool.py -p "ping-ap*.txt" -o report.txt
+ping-tool -p "ping-ap*.txt" -o report.txt
 ```
 
 #### Mix specific files and patterns
 
 ```bash
-python ping-tool.py ping-ap1.txt "ping-switch*.txt"
+ping-tool ping-ap1.txt "ping-switch*.txt"
 ```
 
 ## File Categorization
