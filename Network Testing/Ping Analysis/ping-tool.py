@@ -35,10 +35,10 @@ def analyze_ping_file(filename):
     # Extract sequence numbers, timestamps and ping times
     # Different patterns for with/without timestamp format
     timestamp_pattern = (r'\[(\d+\.\d+)\] 64 bytes from (?:([^()]+) \(([^()]+)\)|([^:]+)): '
-                         r'icmp_req=(\d+) ttl=\d+ time=(.+) ms')
+                         r'icmp_(?:req|seq)=(\d+) ttl=\d+ time=(.+) ms')
 
     standard_pattern = (r'64 bytes from (?:([^()]+) \(([^()]+)\)|([^:]+)): '
-                       r'icmp_req=(\d+) ttl=\d+ time=(.+) ms')
+                       r'icmp_(?:req|seq)=(\d+) ttl=\d+ time=(.+) ms')
 
     seq_nums = []
     timestamps = []
@@ -452,10 +452,12 @@ def generate_summary_report(all_results, output_file=None):
         print(f"  Abnormal intervals: {cat_abnormal}")
         print(f"  Average ping time: {cat_avg_ping:.2f}ms")
 
-        # List files with issues
+        # List all files with ping counts and any issues
+        print("\n  File Details:")
         for results in results_list:
             filename = results["filename"]
             target = results["display_target"]
+            total_pings = results["total_pings"]
             issues = []
 
             if results["missing_seq"]:
@@ -465,7 +467,9 @@ def generate_summary_report(all_results, output_file=None):
                 issues.append(f"{abnormal_count} abnormal intervals")
 
             if issues:
-                print(f"  - {filename} ({target}): {', '.join(issues)}")
+                print(f"  - {filename} ({target}): {total_pings} pings analyzed, {', '.join(issues)}")
+            else:
+                print(f"  - {filename} ({target}): {total_pings} pings analyzed")
 
     print("\n" + "=" * 80)
     print("END OF REPORT")
