@@ -227,3 +227,7 @@ END OF REPORT
 ## License
 
 This tool is provided under the MIT License. See LICENSE file for details.
+
+## Credits
+
+The development of this tool was assisted by Claude-3.7 Sonnet, an AI assistant from Anthropic. Claude helped with code architecture, implementation, documentation, and testing to create a comprehensive solution for ping analysis.
