@@ -625,16 +625,19 @@ def analyze_ping_files():
     # Filter out non-text files
     files = [f for f in files if f.endswith(('.txt', '.log'))]
 
-    # If no files found and no specific operation requested, show help instead of error
-    if not files and not args["ping_target"] and not args["output_file"] and not args["pattern"]:
-        print_usage()
-        return None
-
     # Make sure we have files to analyze
     if not files:
-        print("No ping files found to analyze.")
-        sys.exit(1)
+        # If no specific operation was requested, show a helpful message
+        if not args["ping_target"] and not args["output_file"] and not args["pattern"]:
+            print("No ping files to analyze.")
+            print("Run ping-tool -h for a list of all options.")
+            print("\n" + "-" * 80 + "\n")
+            print_usage()
+        else:
+            print("No ping files found to analyze.")
+        return None
 
+    # If we get here, we have files to analyze
     # Categorize files
     categories = categorize_ping_files(files)
     all_results = {}
