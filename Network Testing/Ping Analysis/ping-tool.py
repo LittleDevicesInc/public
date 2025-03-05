@@ -1,30 +1,58 @@
 #!/usr/bin/env python3
-import re
-import glob
 import sys
-import os
-import subprocess
-from datetime import datetime, timedelta
-import random
-import matplotlib.pyplot as plt
-import matplotlib.dates as mdates
-from matplotlib.figure import Figure
-from matplotlib.backends.backend_agg import FigureCanvasAgg
-import numpy as np
-from reportlab.lib import colors
-from reportlab.lib.pagesizes import letter
-from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, Table, TableStyle, Image
-from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
-from reportlab.lib.units import inch
-import io
-import math
-import tempfile
-import markdown
-from weasyprint import HTML, CSS
-from weasyprint.text.fonts import FontConfiguration
-import json
-import urllib.request
-import pytz
+
+# Check for dependencies before importing them
+try:
+    import re
+    import glob
+    import os
+    import subprocess
+    from datetime import datetime, timedelta
+    import random
+    import matplotlib.pyplot as plt
+    import matplotlib.dates as mdates
+    from matplotlib.figure import Figure
+    from matplotlib.backends.backend_agg import FigureCanvasAgg
+    import numpy as np
+    from reportlab.lib import colors
+    from reportlab.lib.pagesizes import letter
+    from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, Table, TableStyle, Image
+    from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
+    from reportlab.lib.units import inch
+    import io
+    import math
+    import tempfile
+    import markdown
+    from weasyprint import HTML, CSS
+    from weasyprint.text.fonts import FontConfiguration
+    import json
+    import urllib.request
+    import pytz
+except ImportError as e:
+    print(f"Error: Missing dependency - {str(e).split()[-1]}")
+    print("\nPlease follow the installation instructions in the README.md:")
+    print("1. Create a virtual environment: python -m venv .venv")
+    print("2. Activate the virtual environment:")
+    print("   - Linux/Mac: source .venv/bin/activate")
+    print("   - Windows: .venv\\Scripts\\activate")
+    print("3. Install dependencies: pip install -r requirements.txt")
+    print("\nRunning this tool directly from system Python is not recommended.")
+    sys.exit(1)
+
+# Check if running in a virtual environment
+def in_virtualenv():
+    return (hasattr(sys, 'real_prefix') or
+            (hasattr(sys, 'base_prefix') and sys.base_prefix != sys.prefix))
+
+if not in_virtualenv():
+    print("Warning: This tool is not running in a virtual environment.")
+    print("For best results, please follow the installation instructions in README.md.")
+    print("Continue anyway? (y/n)")
+    response = input().strip().lower()
+    if response != 'y':
+        print("Exiting. Please set up and activate a virtual environment before running.")
+        sys.exit(0)
+    print("Continuing without virtual environment...")
 
 # OUI database for MAC address lookup
 OUI_DB = {}
