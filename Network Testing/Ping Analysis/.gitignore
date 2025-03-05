@@ -1,0 +1,24 @@
+# Generated PDF reports
+*.pdf
+
+# Test ping files
+test_ping_files/
+
+# Visualization files
+visualizations/
+
+# OUI database cache
+oui_cache.json
+
+# Python cache files
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Virtual environment
+.venv/
+venv/
+ENV/
+
+# Temporary files
+*.tmp

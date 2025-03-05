@@ -4,12 +4,111 @@ import glob
 import sys
 import os
 import subprocess
-from datetime import datetime
+from datetime import datetime, timedelta
+import random
+import matplotlib.pyplot as plt
+import matplotlib.dates as mdates
+from matplotlib.figure import Figure
+from matplotlib.backends.backend_agg import FigureCanvasAgg
+import numpy as np
+from reportlab.lib import colors
+from reportlab.lib.pagesizes import letter
+from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, Table, TableStyle, Image
+from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
+from reportlab.lib.units import inch
+import io
+import math
+import tempfile
+import markdown
+from weasyprint import HTML, CSS
+from weasyprint.text.fonts import FontConfiguration
+import json
+import urllib.request
+import pytz
 
+# OUI database for MAC address lookup
+OUI_DB = {}
+
+def load_oui_database():
+    """
+    Load the OUI database from the IEEE website or a local cache.
+    Returns a dictionary mapping MAC address prefixes to manufacturer names.
+    """
+    global OUI_DB
+    cache_file = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'oui_cache.json')
+
+    # Try to load from cache first
+    try:
+        if os.path.exists(cache_file) and (datetime.now() - datetime.fromtimestamp(os.path.getmtime(cache_file))).days < 30:
+            with open(cache_file, 'r') as f:
+                OUI_DB = json.load(f)
+                print(f"Loaded OUI database from cache with {len(OUI_DB)} entries")
+                return OUI_DB
+    except Exception as e:
+        print(f"Error loading OUI cache: {e}")
+
+    # If cache doesn't exist or is too old, try to download
+    try:
+        print("Downloading OUI database...")
+        url = "https://raw.githubusercontent.com/silverwind/oui-data/master/index.json"
+        with urllib.request.urlopen(url, timeout=10) as response:
+            OUI_DB = json.loads(response.read().decode('utf-8'))
+
+        # Save to cache
+        with open(cache_file, 'w') as f:
+            json.dump(OUI_DB, f)
+
+        print(f"Downloaded OUI database with {len(OUI_DB)} entries")
+        return OUI_DB
+    except Exception as e:
+        print(f"Error downloading OUI database: {e}")
+
+        # If download fails, try to use an existing cache even if it's old
+        if os.path.exists(cache_file):
+            try:
+                with open(cache_file, 'r') as f:
+                    OUI_DB = json.load(f)
+                    print(f"Using old OUI cache with {len(OUI_DB)} entries")
+                    return OUI_DB
+            except:
+                pass
+
+        # If all else fails, return an empty dictionary
+        return {}
+
+def get_manufacturer_from_mac(mac_address):
+    """
+    Look up the manufacturer name from a MAC address using the OUI database.
+
+    Args:
+        mac_address (str): MAC address in any format
+
+    Returns:
+        str: Manufacturer name or "Unknown"
+    """
+    if not OUI_DB:
+        load_oui_database()
+
+    # Normalize MAC address format
+    mac = mac_address.upper().replace(':', '').replace('-', '').replace('.', '')
+
+    # Check if it's a valid MAC address
+    if not re.match(r'^[0-9A-F]{12}$', mac):
+        return "Unknown"
+
+    # Get the OUI prefix (first 6 characters)
+    oui = mac[:6]
+
+    # Look up in the database
+    manufacturer = OUI_DB.get(oui)
+    if manufacturer:
+        # Return just the first line (company name)
+        return manufacturer.split('\n')[0]
+
+    return "Unknown"
 
 def analyze_ping_file(filename):
     """Analyze a ping file for missing pings and abnormal intervals."""
-    print(f"Analyzing {filename}...")
     try:
         with open(filename, 'r') as f:
             lines = f.readlines()
@@ -20,6 +119,14 @@ def analyze_ping_file(filename):
     # Extract IP/MAC address from first line if available
     target_address = "Unknown"
     target_domain = None
+    mac_address = None
+
+    # Try to extract MAC address from filename
+    mac_match = re.search(r'([0-9A-Fa-f]{2}[:-]){5}([0-9A-Fa-f]{2})', filename)
+    if mac_match:
+        mac_address = mac_match.group(0)
+
+    # Extract IP from ping command line
     ip_match = re.search(r'PING\s+(\S+)(?:\s+\((\S+)\))?', lines[0]) if lines else None
     if ip_match:
         # Could be domain (IP) or just IP
@@ -29,158 +136,95 @@ def analyze_ping_file(filename):
         else:
             target_address = ip_match.group(1)
 
+    # If no MAC in filename, try to find it in the ping output
+    if not mac_address:
+        for line in lines:
+            # Look for ARP responses or other MAC address mentions
+            mac_in_line = re.search(r'([0-9A-Fa-f]{2}[:-]){5}([0-9A-Fa-f]{2})', line)
+            if mac_in_line:
+                mac_address = mac_in_line.group(0)
+                break
+
     # Check if the file has timestamp data (using -D option)
     has_timestamps = any(re.search(r'^\[\d+\.\d+\]', line) for line in lines if line.strip())
 
-    # Extract sequence numbers, timestamps and ping times
-    # Different patterns for with/without timestamp format
-    timestamp_pattern = (r'\[(\d+\.\d+)\] 64 bytes from (?:([^()]+) \(([^()]+)\)|([^:]+)): '
-                         r'icmp_(?:req|seq)=(\d+) ttl=\d+ time=(.+) ms')
-
-    standard_pattern = (r'64 bytes from (?:([^()]+) \(([^()]+)\)|([^:]+)): '
-                       r'icmp_(?:req|seq)=(\d+) ttl=\d+ time=(.+) ms')
-
-    seq_nums = []
-    timestamps = []
+    # Extract ping times and sequence numbers
     ping_times = []
-    domain_names = set()
+    sequences = []
+    timestamps = []
 
-    for i, line in enumerate(lines):
-        # Try timestamp pattern first, then standard pattern
+    for line in lines:
+        # Skip empty lines
+        if not line.strip():
+            continue
+
+        # Extract timestamp if available
+        timestamp = None
         if has_timestamps:
-            match = re.search(timestamp_pattern, line)
-            if match:
-                timestamp = float(match.group(1))
+            ts_match = re.search(r'^\[(\d+\.\d+)\]', line)
+            if ts_match:
+                timestamp = float(ts_match.group(1))
 
-                # Check which format we have - domain (IP) or just IP
-                if match.group(2) and match.group(3):
-                    # Format: domain (IP)
-                    domain = match.group(2).strip()
-                    ip = match.group(3).strip()
-                    if domain and not target_domain:
-                        domain_names.add(domain)
-                    seq_num = int(match.group(5))
-                    ping_time = float(match.group(6))
-                else:
-                    # Format: just IP
-                    seq_num = int(match.group(5))
-                    ping_time = float(match.group(6))
+        # Extract sequence number and ping time
+        seq_match = re.search(r'icmp_seq=(\d+)', line)
+        time_match = re.search(r'time=(\d+\.?\d*)', line)
 
-                seq_nums.append(seq_num)
+        if seq_match and time_match:
+            seq_num = int(seq_match.group(1))
+            ping_time = float(time_match.group(1))
+
+            sequences.append(seq_num)
+            ping_times.append(ping_time)
+            if timestamp:
                 timestamps.append(timestamp)
-                ping_times.append(ping_time)
-        else:
-            # No timestamps, use standard pattern
-            match = re.search(standard_pattern, line)
-            if match:
-                # For files without timestamps, create artificial timestamp based on line number
-                # This helps maintain the analysis flow but won't be used for precise interval calculations
-                artificial_timestamp = float(i)
 
-                # Check which format we have - domain (IP) or just IP
-                if match.group(1) and match.group(2):
-                    # Format: domain (IP)
-                    domain = match.group(1).strip()
-                    ip = match.group(2).strip()
-                    if domain and not target_domain:
-                        domain_names.add(domain)
-                    seq_num = int(match.group(4))
-                    ping_time = float(match.group(5))
-                else:
-                    # Format: just IP
-                    seq_num = int(match.group(4))
-                    ping_time = float(match.group(5))
-
-                seq_nums.append(seq_num)
-                timestamps.append(artificial_timestamp)  # Use artificial timestamp
-                ping_times.append(ping_time)
-
-    # Check for missing sequence numbers
-    if not seq_nums:
-        print(f"No ping data found in {filename}")
+    # If no pings were found, return None
+    if not ping_times:
         return None
 
-    expected_seq = list(range(min(seq_nums), max(seq_nums) + 1))
-    missing_seq = [seq for seq in expected_seq if seq not in seq_nums]
+    # Find missing sequences
+    if sequences:
+        expected_sequences = set(range(min(sequences), max(sequences) + 1))
+        actual_sequences = set(sequences)
+        missing_sequences = sorted(expected_sequences - actual_sequences)
+    else:
+        missing_sequences = []
 
-    # Calculate time intervals between pings - only meaningful with real timestamps
+    # Calculate intervals between timestamps
     intervals = []
-    if has_timestamps:
-        intervals = [timestamps[i] - timestamps[i-1] for i in range(1, len(timestamps))]
-        avg_interval = sum(intervals) / len(intervals) if intervals else 0
+    abnormal_intervals = []
 
-        # Look for abnormal intervals (potential missed pings without sequence gap)
-        threshold = avg_interval * 1.8  # 80% higher than average interval
-        abnormal_intervals = [
-            (seq_nums[i], intervals[i])
-            for i in range(len(intervals))
-            if intervals[i] > threshold
-        ]
-    else:
-        # Without real timestamps, we can't reliably detect abnormal intervals
-        avg_interval = 0
-        abnormal_intervals = []
-        print("Note: This file doesn't contain timestamp data (-D option), so interval analysis is not available.")
+    if len(timestamps) > 1:
+        for i in range(1, len(timestamps)):
+            interval = timestamps[i] - timestamps[i-1]
+            intervals.append(interval)
 
-    # Calculate ping time statistics
-    avg_ping_time = sum(ping_times) / len(ping_times) if ping_times else 0
-    max_ping_time = max(ping_times) if ping_times else 0
-    min_ping_time = min(ping_times) if ping_times else 0
+            # Check for abnormal intervals (more than 2x the median)
+            if len(intervals) > 5:  # Wait until we have enough data
+                median_interval = sorted(intervals[-10:])[len(intervals[-10:]) // 2]
+                if interval > 2 * median_interval:
+                    abnormal_intervals.append((i-1, i, interval, median_interval))
 
-    # Add domain to the results if available
-    if target_domain:
-        display_target = f"{target_domain} ({target_address})"
-    elif domain_names:
-        main_domain = next(iter(domain_names))
-        display_target = f"{main_domain} ({target_address})"
-    else:
-        display_target = target_address
+    # Get manufacturer if MAC address is available
+    manufacturer = None
+    if mac_address:
+        manufacturer = get_manufacturer_from_mac(mac_address)
 
-    # Prepare results
-    results = {
+    # Return the analysis results
+    return {
         "filename": filename,
-        "target_address": target_address,
-        "target_domain": target_domain if target_domain else (next(iter(domain_names)) if domain_names else None),
-        "display_target": display_target,
-        "total_pings": len(seq_nums),
-        "first_sequence": min(seq_nums),
-        "last_sequence": max(seq_nums),
-        "has_timestamps": has_timestamps,
-        "avg_interval": avg_interval if has_timestamps else None,
-        "missing_seq": missing_seq,
+        "ip": target_address,
+        "domain": target_domain,
+        "mac_address": mac_address,
+        "manufacturer": manufacturer,
+        "times": ping_times,
+        "sequences": sequences,
+        "timestamps": timestamps,
+        "missing_sequences": missing_sequences,
+        "intervals": intervals,
         "abnormal_intervals": abnormal_intervals,
-        "avg_ping_time": avg_ping_time,
-        "min_ping_time": min_ping_time,
-        "max_ping_time": max_ping_time
+        "has_timestamps": has_timestamps
     }
-
-    # Print summary
-    print(f"Target: {display_target}")
-    print(f"Total pings: {len(seq_nums)}")
-    print(f"First sequence: {min(seq_nums)}")
-    print(f"Last sequence: {max(seq_nums)}")
-
-    if has_timestamps:
-        print(f"Average interval: {avg_interval:.2f} seconds")
-
-    print(f"Ping statistics: {avg_ping_time:.2f}ms avg, "
-          f"{min_ping_time:.2f}ms min, {max_ping_time:.2f}ms max")
-
-    if missing_seq:
-        print(f"Missing sequences: {missing_seq}")
-    else:
-        print("No missing sequences")
-
-    if has_timestamps and abnormal_intervals:
-        print("Abnormal intervals (potential missed pings):")
-        for seq, interval in abnormal_intervals:
-            print(f"  After sequence {seq}: {interval:.2f} seconds "
-                  f"(expected ~{avg_interval:.2f})")
-    elif has_timestamps:
-        print("No abnormal intervals detected")
-
-    print("-" * 50)
-    return results
 
 
 def is_mac_address_in_filename(filename):
@@ -249,6 +293,35 @@ def get_files_to_analyze(file_args):
     return unique_files
 
 
+def check_screen_available():
+    """Check if screen is available on the system."""
+    try:
+        subprocess.run(['screen', '-version'], stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        return True
+    except FileNotFoundError:
+        return False
+
+
+def cleanup_old_screen_sessions():
+    """Clean up completed screen sessions older than 24 hours."""
+    try:
+        # List all screen sessions
+        result = subprocess.run(['screen', '-ls'], capture_output=True, text=True)
+        if result.returncode != 0:
+            return
+
+        # Find completed sessions (status: "Dead")
+        for line in result.stdout.split('\n'):
+            if 'Dead' in line:
+                # Extract session ID
+                session_id = line.split()[0]
+                # Remove the session
+                subprocess.run(['screen', '-wipe'])
+                print(f"Cleaned up dead screen session: {session_id}")
+    except Exception as e:
+        print(f"Warning: Could not clean up screen sessions: {str(e)}")
+
+
 def start_ping(target, output_file=None, count=None, interval=None, use_timestamp=True):
     """
     Start a ping and save output to a file.
@@ -270,8 +343,10 @@ def start_ping(target, output_file=None, count=None, interval=None, use_timestam
         timestamp = datetime.now().strftime('%Y%m%d-%H%M%S')
         output_file = f"ping-{clean_target}-{timestamp}.log"
 
-    # Build the ping command with or without -D
+    # Build the ping command
     cmd = ["ping"]
+
+    # Always use -D option for timestamps unless explicitly disabled
     if use_timestamp:
         cmd.append("-D")
 
@@ -286,6 +361,7 @@ def start_ping(target, output_file=None, count=None, interval=None, use_timestam
 
     print(f"Starting ping to {target}, output will be saved to {output_file}")
     print(f"Command: {' '.join(cmd)} > {output_file}")
+    print(f"Note: Using -D option for timestamps to enable time series analysis")
 
     try:
         # Start the ping process and redirect output to the file
@@ -301,15 +377,14 @@ def start_ping(target, output_file=None, count=None, interval=None, use_timestam
 
 
 def categorize_ping_files(files):
-    """Categorize ping files by type."""
-    # Initialize categories
+    """Categorize ping files based on naming patterns."""
     categories = {
         "mac": [],
         "ap": [],
         "gw": [],
         "switch": [],
-        "fw": [],  # Added firewall category
-        "host": [],  # Added host category
+        "fw": [],
+        "host": [],
         "ip": [],
         "other": []
     }
@@ -370,116 +445,622 @@ def categorize_ping_files(files):
     return categories
 
 
-def generate_summary_report(all_results, output_file=None):
-    """Generate a summary report of all ping analysis results."""
-    # Start capturing output if file specified
-    original_stdout = None
-    if output_file:
-        original_stdout = sys.stdout
-        f = open(output_file, 'w')
-        sys.stdout = f
+def create_visualization(results, output_dir='visualizations'):
+    """
+    Create visualizations for ping results and save them to the specified output directory.
 
-    # Report header
-    report_time = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
-    print("\n" + "=" * 80)
-    print("PING ANALYSIS SUMMARY REPORT")
-    print("=" * 80)
-    print(f"Report generated on: {report_time}")
-    print("-" * 80)
+    Args:
+        results (dict): Dictionary containing ping results
+        output_dir (str): Directory to save visualizations
 
-    # Count total files with issues
-    files_with_missing = 0
-    files_with_abnormal = 0
-    total_missing_pings = 0
-    total_abnormal_intervals = 0
-    files_with_timestamps = 0
-    files_without_timestamps = 0
+    Returns:
+        str: Path to the output directory
+    """
+    import matplotlib.pyplot as plt
+    import matplotlib.dates as mdates
+    import os
+    from datetime import datetime
+    import numpy as np
 
-    for category, results_list in all_results.items():
-        for results in results_list:
-            if results["missing_seq"]:
-                files_with_missing += 1
-                total_missing_pings += len(results["missing_seq"])
-            if results.get("abnormal_intervals", []):
-                files_with_abnormal += 1
-                total_abnormal_intervals += len(
-                    results["abnormal_intervals"]
-                )
-            if results.get("has_timestamps", False):
-                files_with_timestamps += 1
-            else:
-                files_without_timestamps += 1
+    # Create output directory if it doesn't exist
+    if not os.path.exists(output_dir):
+        os.makedirs(output_dir)
 
-    # Calculate total files analyzed
-    total_files = sum(
-        len(results_list) for results_list in all_results.values()
-    )
+    # Clear any existing plots
+    plt.close('all')
 
-    print(f"Total files analyzed: {total_files}")
-    print(f"Files with timestamp data (-D option): {files_with_timestamps}")
-    print(f"Files without timestamp data: {files_without_timestamps}")
-    print(f"Files with missing pings: {files_with_missing}")
-    print(f"Files with abnormal intervals: {files_with_abnormal}")
-    print(f"Total missing pings: {total_missing_pings}")
-    print(f"Total abnormal intervals: {total_abnormal_intervals}")
-    print("-" * 80)
+    # Group results by device type
+    device_types = {
+        'access_points': {},
+        'gateways': {},
+        'voip_phones': {},
+        'switches': {}
+    }
 
-    # Summary by category
-    print("\nCATEGORY SUMMARY:")
-    for category, results_list in all_results.items():
-        if not results_list:
+    # Process all devices, even those without timestamps
+    for device_name, device_data in results.items():
+        device_type = 'switches'  # default category
+
+        if 'access_point' in device_name:
+            device_type = 'access_points'
+        elif 'gateway' in device_name:
+            device_type = 'gateways'
+        elif 'voip' in device_name:
+            device_type = 'voip_phones'
+        elif 'switch' in device_name:
+            device_type = 'switches'
+
+        device_types[device_type][device_name] = device_data
+
+    # Create a simple line chart for each device type showing response times
+    for device_type, devices in device_types.items():
+        if not devices:
             continue
 
-        cat_missing = sum(len(r["missing_seq"]) for r in results_list)
-        cat_abnormal = sum(
-            len(r.get("abnormal_intervals", [])) for r in results_list
-        )
+        plt.figure(figsize=(12, 8))
 
-        # Calculate average ping time for this category
-        if results_list:
-            cat_avg_ping = sum(
-                r["avg_ping_time"] for r in results_list
-            ) / len(results_list)
+        # Color palette
+        colors = plt.cm.tab10.colors
+
+        # For devices without timestamps, create a simple line chart
+        for i, (device_name, device_data) in enumerate(devices.items()):
+            if len(device_data['times']) > 0:
+                # Use sequence numbers or just indices if no timestamps
+                x_values = list(range(len(device_data['times'])))
+
+                # If we have timestamps, use those instead
+                if 'timestamps' in device_data and device_data['timestamps'] and len(device_data['timestamps']) == len(device_data['times']):
+                    x_values = [datetime.fromtimestamp(ts) for ts in device_data['timestamps']]
+
+                # Plot with a specific color from the palette
+                color_idx = i % len(colors)
+                plt.plot(x_values, device_data['times'],
+                         label=f"{device_name} ({device_data['ip']})",
+                         linewidth=1.5,
+                         color=colors[color_idx],
+                         alpha=0.8)
+
+        # Set title and labels
+        plt.title(f'Ping Response Times for {device_type.replace("_", " ").title()}', fontsize=16)
+
+        # If we used timestamps, format x-axis accordingly
+        if any('timestamps' in device_data and device_data['timestamps'] for device_data in devices.values()):
+            plt.xlabel('Time', fontsize=12)
+            plt.gca().xaxis.set_major_formatter(mdates.DateFormatter('%Y-%m-%d %H:%M'))
+            plt.gca().xaxis.set_major_locator(mdates.AutoDateLocator())
+            plt.gcf().autofmt_xdate()
         else:
-            cat_avg_ping = 0
+            plt.xlabel('Sequence Number', fontsize=12)
 
-        # Count how many have timestamps in this category
-        cat_with_timestamps = sum(1 for r in results_list if r.get("has_timestamps", False))
-        cat_total = len(results_list)
+        plt.ylabel('Response Time (ms)', fontsize=12)
 
-        print(f"\n{category.upper()} ({len(results_list)} files, {cat_with_timestamps} with timestamps):")
-        print(f"  Missing pings: {cat_missing}")
-        print(f"  Abnormal intervals: {cat_abnormal}")
-        print(f"  Average ping time: {cat_avg_ping:.2f}ms")
+        # Add grid
+        plt.grid(True, linestyle='--', alpha=0.7)
 
-        # List all files with ping counts and any issues
-        print("\n  File Details:")
-        for results in results_list:
-            filename = results["filename"]
-            target = results["display_target"]
-            total_pings = results["total_pings"]
-            issues = []
+        # Add legend (only if there are not too many devices)
+        if len(devices) <= 15:
+            plt.legend(loc='upper right', fontsize=10)
 
-            if results["missing_seq"]:
-                issues.append(f"{len(results['missing_seq'])} missing pings")
-            if results.get("abnormal_intervals", []):
-                abnormal_count = len(results["abnormal_intervals"])
-                issues.append(f"{abnormal_count} abnormal intervals")
+        # Adjust layout
+        plt.tight_layout()
 
-            if issues:
-                print(f"  - {filename} ({target}): {total_pings} pings analyzed, {', '.join(issues)}")
+        # Save the figure
+        output_file = os.path.join(output_dir, f'{device_type}_ping_times.svg')
+        plt.savefig(output_file, format='svg', bbox_inches='tight')
+        print(f"Saved visualization to {output_file}")
+
+        # Close the figure to free memory
+        plt.close()
+
+    # Create a horizontal line chart showing average response times by device
+    plt.figure(figsize=(12, 8))
+
+    # Collect data for horizontal bar chart
+    device_names = []
+    avg_times = []
+    device_colors = []
+
+    # Color mapping for device types
+    type_colors = {
+        'access_points': 'blue',
+        'gateways': 'green',
+        'voip_phones': 'red',
+        'switches': 'orange'
+    }
+
+    # Collect data for all devices
+    for device_type, devices in device_types.items():
+        for device_name, device_data in devices.items():
+            if device_data['times']:
+                device_names.append(f"{device_name} ({device_data['ip']})")
+                avg_times.append(sum(device_data['times']) / len(device_data['times']))
+                device_colors.append(type_colors[device_type])
+
+    # Sort by average time
+    sorted_indices = np.argsort(avg_times)
+    sorted_names = [device_names[i] for i in sorted_indices]
+    sorted_times = [avg_times[i] for i in sorted_indices]
+    sorted_colors = [device_colors[i] for i in sorted_indices]
+
+    # Create horizontal bar chart
+    plt.barh(sorted_names, sorted_times, color=sorted_colors, alpha=0.7)
+    plt.xlabel('Average Response Time (ms)', fontsize=12)
+    plt.ylabel('Device', fontsize=12)
+    plt.title('Average Ping Response Time by Device', fontsize=16)
+    plt.grid(True, linestyle='--', alpha=0.5, axis='x')
+
+    # Add a legend for device types
+    from matplotlib.patches import Patch
+    legend_elements = [Patch(facecolor=color, label=device_type.replace('_', ' ').title())
+                      for device_type, color in type_colors.items()]
+    plt.legend(handles=legend_elements, loc='lower right')
+
+    # Adjust layout
+    plt.tight_layout()
+
+    # Save the figure
+    output_file = os.path.join(output_dir, 'average_response_times.svg')
+    plt.savefig(output_file, format='svg', bbox_inches='tight')
+    print(f"Saved visualization to {output_file}")
+
+    # Close the figure
+    plt.close()
+
+    print(f"Visualizations saved to: {output_dir}/")
+    return output_dir
+
+
+def generate_pdf_report(results, output_file, visualizations_dir=None):
+    """
+    Generate a PDF report from ping results.
+
+    Args:
+        results (dict): Dictionary containing ping results
+        output_file (str): Output PDF file path
+        visualizations_dir (str, optional): Directory containing visualizations
+    """
+    import os
+    import markdown
+    from weasyprint import HTML, CSS
+    from weasyprint.text.fonts import FontConfiguration
+
+    # Calculate packet loss for each device
+    for device_name, device_data in results.items():
+        if 'sequences' in device_data and device_data['sequences']:
+            # Only calculate if we have sequence numbers
+            if len(device_data['sequences']) > 0:
+                total_expected = max(device_data['sequences']) - min(device_data['sequences']) + 1
+                total_received = len(device_data['sequences'])
+                # Ensure we don't have negative packet loss
+                if total_expected >= total_received:
+                    packet_loss = ((total_expected - total_received) / total_expected) * 100
+                else:
+                    # If we somehow have more received than expected, set to 0
+                    packet_loss = 0
             else:
-                print(f"  - {filename} ({target}): {total_pings} pings analyzed")
+                packet_loss = 0
+        else:
+            # If no sequence data, calculate based on missing_sequences if available
+            if 'missing_sequences' in device_data and device_data['times']:
+                total_missing = len(device_data['missing_sequences'])
+                total_received = len(device_data['times'])
+                total_expected = total_received + total_missing
+                if total_expected > 0:
+                    packet_loss = (total_missing / total_expected) * 100
+                else:
+                    packet_loss = 0
 
-    print("\n" + "=" * 80)
-    print("END OF REPORT")
-    print("=" * 80)
+        device_data['packet_loss'] = packet_loss
 
-    # Restore stdout if needed
-    if original_stdout:
-        sys.stdout = original_stdout
-        f.close()
-        print(f"Report saved to {output_file}")
+    # Group devices by type
+    gateways = {}
+    switches = {}
+    access_points = {}
+    voip_phones = {}
+    hosts = {}  # New category for user devices
+
+    for device_name, device_data in results.items():
+        if 'gateway' in device_name:
+            gateways[device_name] = device_data
+        elif 'switch' in device_name:
+            switches[device_name] = device_data
+        elif 'access_point' in device_name:
+            access_points[device_name] = device_data
+        elif 'voip' in device_name:
+            voip_phones[device_name] = device_data
+        else:
+            # Anything not matching the above categories is considered a host
+            hosts[device_name] = device_data
+
+    # Calculate overall statistics
+    total_devices = len(results)
+    total_pings = sum(len(data['times']) for data in results.values())
+    missing_pings = sum(len(data.get('missing_sequences', [])) for data in results.values())
+    abnormal_intervals = sum(len(data.get('abnormal_intervals', [])) for data in results.values())
+
+    all_times = []
+    for data in results.values():
+        all_times.extend(data['times'])
+
+    min_time = min(all_times) if all_times else 0
+    max_time = max(all_times) if all_times else 0
+    avg_time = sum(all_times) / len(all_times) if all_times else 0
+
+    # Calculate overall packet loss
+    total_expected_pings = total_pings + missing_pings
+    overall_packet_loss = (missing_pings / total_expected_pings) * 100 if total_expected_pings > 0 else 0
+
+    # Get current time in PST
+    pst_timezone = pytz.timezone('America/Los_Angeles')
+    current_time_pst = datetime.now(pst_timezone)
+
+    # Find problematic devices (high latency or packet loss)
+    high_latency_threshold = avg_time * 1.5  # 50% higher than average
+    high_packet_loss_threshold = 5.0  # 5% packet loss or higher
+
+    problematic_devices = []
+    for device_name, device_data in results.items():
+        device_avg_time = sum(device_data['times']) / len(device_data['times']) if device_data['times'] else 0
+        packet_loss = device_data.get('packet_loss', 0)
+
+        if device_avg_time > high_latency_threshold or packet_loss > high_packet_loss_threshold:
+            # Clean up device name for display
+            display_name = device_name
+            if 'gw-gateway' in device_name:
+                display_name = device_name.replace('gw-gateway', 'gateway')
+            elif 'sw-switch' in device_name:
+                display_name = device_name.replace('sw-switch', 'switch')
+            elif 'ap-access_point' in device_name:
+                display_name = device_name.replace('ap-access_point', 'ap')
+            elif 'voip-voip_phone' in device_name:
+                display_name = device_name.replace('voip-voip_phone', 'phone')
+
+            issue = []
+            if device_avg_time > high_latency_threshold:
+                issue.append(f"high latency ({device_avg_time:.2f}ms)")
+            if packet_loss > high_packet_loss_threshold:
+                issue.append(f"packet loss ({packet_loss:.2f}%)")
+
+            problematic_devices.append({
+                'name': display_name,
+                'ip': device_data['ip'],
+                'avg_time': device_avg_time,
+                'packet_loss': packet_loss,
+                'issue': ', '.join(issue)
+            })
+
+    # Sort problematic devices by severity (packet loss first, then latency)
+    problematic_devices.sort(key=lambda x: (x['packet_loss'], x['avg_time']), reverse=True)
+
+    # Generate markdown content
+    markdown_content = f"""
+# Network Ping Analysis Report
+*Generated on {current_time_pst.strftime('%B %d, %Y at %I:%M:%S %p %Z')}*
+
+## Summary
+
+**Total Devices Tested:** {total_devices}
+- {len(gateways)} Gateways
+- {len(switches)} Switches
+- {len(access_points)} Access Points
+- {len(voip_phones)} VoIP Phones
+- {len(hosts)} Hosts
+
+> **Note:** All ping tests were conducted with the `-D` timestamp option for accurate interval analysis.
+
+## Overall Performance
+
+| Metric | Value |
+|--------|-------|
+| Total Pings | {total_pings:,} |
+| Missing Pings | {missing_pings:,} |
+| Packet Loss | {overall_packet_loss:.2f}% |
+| Abnormal Intervals | {abnormal_intervals:,} |
+| Min Response Time | {min_time:.2f}ms |
+| Max Response Time | {max_time:.2f}ms |
+| Avg Response Time | {avg_time:.2f}ms |
+
+## Device Performance
+
+### Gateways
+
+| Device | IP | Avg (ms) | Min (ms) | Max (ms) | Packet Loss (%) | Pings |
+|--------|------------|---------|---------|---------|--------------|-------|
+"""
+
+    # Add gateway data
+    for device_name, device_data in sorted(gateways.items()):
+        # Clean up device name for display
+        display_name = device_name.replace('gw-gateway', 'gateway')
+
+        avg_time = sum(device_data['times']) / len(device_data['times']) if device_data['times'] else 0
+        min_time = min(device_data['times']) if device_data['times'] else 0
+        max_time = max(device_data['times']) if device_data['times'] else 0
+        packet_loss = device_data.get('packet_loss', 0)
+        markdown_content += f"| {display_name} | {device_data['ip']} | {avg_time:.2f} | {min_time:.2f} | {max_time:.2f} | {packet_loss:.2f} | {len(device_data['times']):,} |\n"
+
+    # Add switch data
+    markdown_content += f"""
+
+### Switches
+
+| Device | IP | Avg (ms) | Min (ms) | Max (ms) | Packet Loss (%) | Pings |
+|--------|------------|---------|---------|---------|--------------|-------|
+"""
+
+    for device_name, device_data in sorted(switches.items()):
+        # Clean up device name for display
+        display_name = device_name.replace('sw-switch', 'switch')
+
+        avg_time = sum(device_data['times']) / len(device_data['times']) if device_data['times'] else 0
+        min_time = min(device_data['times']) if device_data['times'] else 0
+        max_time = max(device_data['times']) if device_data['times'] else 0
+        packet_loss = device_data.get('packet_loss', 0)
+        markdown_content += f"| {display_name} | {device_data['ip']} | {avg_time:.2f} | {min_time:.2f} | {max_time:.2f} | {packet_loss:.2f} | {len(device_data['times']):,} |\n"
+
+    # Add access point data
+    markdown_content += f"""
+
+### Access Points
+
+| Device | IP | Avg (ms) | Min (ms) | Max (ms) | Packet Loss (%) | Pings |
+|--------|------------|---------|---------|---------|--------------|-------|
+"""
+
+    for device_name, device_data in sorted(access_points.items()):
+        # Clean up device name for display
+        display_name = device_name.replace('ap-access_point', 'ap')
+
+        avg_time = sum(device_data['times']) / len(device_data['times']) if device_data['times'] else 0
+        min_time = min(device_data['times']) if device_data['times'] else 0
+        max_time = max(device_data['times']) if device_data['times'] else 0
+        packet_loss = device_data.get('packet_loss', 0)
+        markdown_content += f"| {display_name} | {device_data['ip']} | {avg_time:.2f} | {min_time:.2f} | {max_time:.2f} | {packet_loss:.2f} | {len(device_data['times']):,} |\n"
+
+    # Add VoIP phone data
+    voip_total_pings = sum(len(data['times']) for data in voip_phones.values())
+    voip_all_times = []
+    for data in voip_phones.values():
+        voip_all_times.extend(data['times'])
+
+    voip_min_time = min(voip_all_times) if voip_all_times else 0
+    voip_max_time = max(voip_all_times) if voip_all_times else 0
+    voip_avg_time = sum(voip_all_times) / len(voip_all_times) if voip_all_times else 0
+
+    voip_missing = sum(len(data.get('missing_sequences', [])) for data in voip_phones.values())
+
+    # Calculate VoIP packet loss
+    voip_expected_pings = voip_total_pings + voip_missing
+    voip_packet_loss = (voip_missing / voip_expected_pings) * 100 if voip_expected_pings > 0 else 0
+
+    markdown_content += f"""
+
+### VoIP Phones
+
+**Devices tested:** {len(voip_phones)}
+**Total pings:** {voip_total_pings:,}
+**Average response:** {voip_avg_time:.2f}ms
+**Response range:** {voip_min_time:.2f}ms to {voip_max_time:.2f}ms
+**Missing sequences:** {voip_missing}
+**Packet loss:** {voip_packet_loss:.2f}%
+
+| Device | IP | Avg (ms) | Min (ms) | Max (ms) | Packet Loss (%) | Pings |
+|--------|------------|---------|---------|---------|--------------|-------|
+"""
+
+    for device_name, device_data in sorted(voip_phones.items()):
+        # Clean up device name for display
+        display_name = device_name.replace('voip-voip_phone', 'phone')
+
+        avg_time = sum(device_data['times']) / len(device_data['times']) if device_data['times'] else 0
+        min_time = min(device_data['times']) if device_data['times'] else 0
+        max_time = max(device_data['times']) if device_data['times'] else 0
+        packet_loss = device_data.get('packet_loss', 0)
+        markdown_content += f"| {display_name} | {device_data['ip']} | {avg_time:.2f} | {min_time:.2f} | {max_time:.2f} | {packet_loss:.2f} | {len(device_data['times']):,} |\n"
+
+    # Add host data (if any)
+    if hosts:
+        markdown_content += f"""
+
+### Hosts
+
+| Device | IP | MAC Address | Manufacturer | Avg (ms) | Min (ms) | Max (ms) | Packet Loss (%) | Pings |
+|--------|------------|------------|------------|---------|---------|---------|--------------|-------|
+"""
+
+        for device_name, device_data in sorted(hosts.items()):
+            avg_time = sum(device_data['times']) / len(device_data['times']) if device_data['times'] else 0
+            min_time = min(device_data['times']) if device_data['times'] else 0
+            max_time = max(device_data['times']) if device_data['times'] else 0
+            packet_loss = device_data.get('packet_loss', 0)
+            mac_address = device_data.get('mac_address', 'Unknown')
+            manufacturer = device_data.get('manufacturer', 'Unknown')
+            markdown_content += f"| {device_name} | {device_data['ip']} | {mac_address} | {manufacturer} | {avg_time:.2f} | {min_time:.2f} | {max_time:.2f} | {packet_loss:.2f} | {len(device_data['times']):,} |\n"
+
+    # Add visualizations if available
+    if visualizations_dir and os.path.exists(visualizations_dir):
+        visualization_files = [f for f in os.listdir(visualizations_dir) if f.endswith('.svg')]
+
+        if visualization_files:
+            markdown_content += f"""
+
+## Visualizations
+
+The following visualizations show ping response times for different device types:
+
+"""
+            for viz_file in visualization_files:
+                file_name = viz_file
+                viz_path = os.path.join(visualizations_dir, viz_file)
+                markdown_content += f"![{file_name}]({viz_path})\n\n"
+
+    # Add actionable observations and recommendations based on actual data
+    markdown_content += f"""
+
+## Observations and Recommendations
+
+### Critical Issues Detected
+
+"""
+
+    if problematic_devices:
+        markdown_content += "The following devices are experiencing connectivity issues:\n\n"
+        markdown_content += "| Device | IP | Issue | Avg Response | Packet Loss |\n"
+        markdown_content += "|--------|------------|---------|---------|--------|\n"
+
+        for device in problematic_devices[:10]:  # Show top 10 most problematic devices
+            markdown_content += f"| {device['name']} | {device['ip']} | {device['issue']} | {device['avg_time']:.2f}ms | {device['packet_loss']:.2f}% |\n"
+
+        # Add specific recommendations based on the issues found
+        markdown_content += f"""
+
+### Recommended Actions
+
+1. **Investigate Network Segment Issues**: {len(problematic_devices)} devices are experiencing performance issues. Check network switches and cabling in affected areas.
+
+2. **Prioritize High Packet Loss Devices**: Devices with packet loss above 5% should be investigated immediately, as this indicates connectivity problems.
+
+3. **Monitor High Latency Devices**: Devices with response times above {high_latency_threshold:.2f}ms (network average: {avg_time:.2f}ms) may indicate local network congestion or hardware issues.
+
+4. **Schedule Maintenance**: Consider scheduling maintenance for the most problematic devices identified above.
+
+5. **Implement Regular Testing**: Set up automated ping tests during both peak and off-peak hours to better identify patterns.
+
+"""
+    else:
+        markdown_content += """
+No critical issues were detected in this analysis. All devices are operating within normal parameters.
+
+### Recommended Actions
+
+1. **Continue Monitoring**: Maintain regular network monitoring to ensure continued performance.
+
+2. **Establish Baselines**: Use these results to establish baseline performance metrics for future comparison.
+
+3. **Expand Testing**: Consider expanding testing to include more devices and external targets.
+
+"""
+
+    # Convert markdown to HTML
+    html_content = markdown.markdown(markdown_content, extensions=['tables', 'fenced_code'])
+
+    # Create a temporary HTML file
+    with tempfile.NamedTemporaryFile(suffix='.html', delete=False) as temp_html:
+        temp_html.write(html_content.encode('utf-8'))
+        temp_html_path = temp_html.name
+
+    # Convert HTML to PDF
+    font_config = FontConfiguration()
+    html = HTML(filename=temp_html_path)
+    css = CSS(string=f'''
+        body {{ font-family: Arial, sans-serif; margin: 20px; }}
+        table {{ border-collapse: collapse; width: 100%; margin-bottom: 20px; }}
+        th, td {{ border: 1px solid #ddd; padding: 8px; text-align: left; }}
+        th {{ background-color: #652c90; color: white; }}
+        h1, h2, h3 {{ color: #652c90; }}
+        h1 {{ border-bottom: 2px solid #652c90; padding-bottom: 10px; }}
+        h2 {{ border-bottom: 1px solid #652c90; padding-bottom: 5px; }}
+        img {{ max-width: 100%; height: auto; }}
+        blockquote {{ background-color: #f9f2ff; border-left: 4px solid #652c90; padding: 10px; margin: 20px 0; }}
+    ''', font_config=font_config)
+
+    html.write_pdf(output_file, stylesheets=[css], font_config=font_config)
+
+    # Clean up temporary file
+    os.unlink(temp_html_path)
+
+    print(f"Custom PDF report generated: {output_file}")
+
+    if visualizations_dir:
+        print(f"Visualizations saved to: {visualizations_dir}/")
+
+    return output_file
+
+
+def generate_summary_report(results, skip_pdf=False):
+    """Generate a summary report of ping analysis results."""
+    # Count total files analyzed
+    total_files = sum(len(device_results) for device_results in results.values())
+
+    print("\n===== Ping Analysis Summary =====")
+    print(f"Total files analyzed: {total_files}")
+
+    # Calculate overall statistics
+    total_pings = sum(len(data['times']) for data in results.values())
+    missing_pings = sum(len(data.get('missing_sequences', [])) for data in results.values())
+    abnormal_intervals = sum(len(data.get('abnormal_intervals', [])) for data in results.values())
+
+    all_times = []
+    for data in results.values():
+        all_times.extend(data['times'])
+
+    min_time = min(all_times) if all_times else 0
+    max_time = max(all_times) if all_times else 0
+    avg_time = sum(all_times) / len(all_times) if all_times else 0
+
+    print(f"\nOverall Statistics:")
+    print(f"  Total Pings: {total_pings:,}")
+    print(f"  Missing Pings: {missing_pings:,}")
+    print(f"  Abnormal Intervals: {abnormal_intervals:,}")
+    print(f"  Min Response Time: {min_time:.2f}ms")
+    print(f"  Max Response Time: {max_time:.2f}ms")
+    print(f"  Avg Response Time: {avg_time:.2f}ms")
+
+    # Group devices by type
+    access_points = {}
+    gateways = {}
+    voip_phones = {}
+    switches = {}
+
+    for device_name, device_data in results.items():
+        if 'access_point' in device_name:
+            access_points[device_name] = device_data
+        elif 'gateway' in device_name:
+            gateways[device_name] = device_data
+        elif 'voip' in device_name:
+            voip_phones[device_name] = device_data
+        elif 'switch' in device_name:
+            switches[device_name] = device_data
+
+    # Print device type summaries
+    if access_points:
+        print(f"\nAccess Points ({len(access_points)}):")
+        for name, data in sorted(access_points.items()):
+            avg_time = sum(data['times']) / len(data['times']) if data['times'] else 0
+            print(f"  {name} ({data['ip']}): {avg_time:.2f}ms avg, {len(data['times']):,} pings")
+
+    if gateways:
+        print(f"\nGateways ({len(gateways)}):")
+        for name, data in sorted(gateways.items()):
+            avg_time = sum(data['times']) / len(data['times']) if data['times'] else 0
+            print(f"  {name} ({data['ip']}): {avg_time:.2f}ms avg, {len(data['times']):,} pings")
+
+    if voip_phones:
+        print(f"\nVoIP Phones ({len(voip_phones)}):")
+        for name, data in sorted(voip_phones.items()):
+            avg_time = sum(data['times']) / len(data['times']) if data['times'] else 0
+            print(f"  {name} ({data['ip']}): {avg_time:.2f}ms avg, {len(data['times']):,} pings")
+
+    if switches:
+        print(f"\nSwitches ({len(switches)}):")
+        for name, data in sorted(switches.items()):
+            avg_time = sum(data['times']) / len(data['times']) if data['times'] else 0
+            print(f"  {name} ({data['ip']}): {avg_time:.2f}ms avg, {len(data['times']):,} pings")
+
+    print("\n=================================")
+
+    # Generate PDF report if not skipped
+    if not skip_pdf:
+        try:
+            pdf_file = "ping_analysis_report.pdf"
+            generate_pdf_report(results, pdf_file)
+            print(f"\nPDF report generated: {pdf_file}")
+        except ImportError:
+            print("\nReportLab library not installed. Install with: pip install reportlab")
+        except Exception as e:
+            print(f"\nError generating PDF report: {str(e)}")
+            import traceback
+            traceback.print_exc()
 
 
 def print_usage():
@@ -499,34 +1080,19 @@ def print_usage():
     print("  --interval SEC              Interval between pings in seconds (optional)")
     print("  --ping-output FILE           Output file for ping results (optional)")
     print("  --no-timestamp              Don't use -D timestamp option when starting a ping")
+    print("  --pdf FILE                  Generate a PDF report (default: ping_analysis_report.pdf)")
+    print("  --visualize                 Generate visualizations from ping data")
+    print("  --generate-test-files       Generate test ping files for demonstration")
+    print("\nImportant Notes:")
+    print("  - The -D timestamp option is enabled by default and recommended for all pings")
+    print("    as it allows for time series analysis and visualization.")
+    print("  - For best results, always use the --visualize option with the --pdf option")
+    print("    to include visualizations in the PDF report.")
     print("\nExamples:")
-    print("  # Start a ping to a target and save the output:")
-    print("  ping-tool --ping 192.168.1.1")
-    print("\n  # Start a ping without timestamps:")
-    print("  ping-tool --ping google.com --no-timestamp")
-    print("\n  # Start a ping with a specific count and interval:")
-    print("  ping-tool --ping ap-123.local --count 100 --interval 0.5")
-    print("\n  # Analyze all ping files in current directory:")
-    print("  ping-tool")
-    print("\n  # Analyze a specific file:")
-    print("  ping-tool ping-ap1.txt")
-    print("\n  # Analyze multiple specific files:")
-    print("  ping-tool ping-ap1.txt ping-ap2.txt")
-    print("\n  # Analyze files matching a pattern and save report:")
-    print("  ping-tool -p \"ping-ap*.txt\" -o report.txt")
-    print("\n  # Mix specific files and patterns:")
-    print("  ping-tool ping-ap1.txt \"ping-switch*.txt\"")
-    print("\nFile Categories:")
-    print("  Files are automatically categorized based on naming patterns:")
-    print("  - MAC: Files containing a MAC address in any format/case")
-    print("         (e.g., ping-02:9F:79:A1:6D:A9.txt, ping_029f79a16da9.txt)")
-    print("  - AP:  Files containing 'ap', 'aps', or 'access-point' in the name")
-    print("  - GW:  Files containing 'gw' or 'gateway' in the name")
-    print("  - SWITCH: Files containing 'switch' or 'sw' in the name")
-    print("  - FW:  Files containing 'fw' or 'firewall' in the name")
-    print("  - HOST: Files containing 'host' or 'device' in the name")
-    print("  - IP:  Files containing an IP address pattern")
-    print("  - OTHER: Any other ping files")
+    print("  ping-tool --ping 8.8.8.8 --count 100")
+    print("  ping-tool --pdf report.pdf ping_logs/*.log")
+    print("  ping-tool --visualize ping_logs/*.log")
+    print("  ping-tool --pdf network_report.pdf --visualize ping_logs/*.log")
 
 
 def parse_args():
@@ -539,7 +1105,10 @@ def parse_args():
         "ping_count": None,
         "ping_interval": None,
         "ping_output": None,
-        "no_timestamp": False
+        "no_timestamp": False,
+        "generate_test_files": False,
+        "pdf_output": None,
+        "visualize": False
     }
 
     # Process all arguments
@@ -584,6 +1153,15 @@ def parse_args():
         elif arg == "--no-timestamp":
             args["no_timestamp"] = True
             i += 1
+        elif arg == "--generate-test-files":
+            args["generate_test_files"] = True
+            i += 1
+        elif arg == "--pdf" and i+1 < len(sys.argv):
+            args["pdf_output"] = sys.argv[i+1]
+            i += 2
+        elif arg == "--visualize":
+            args["visualize"] = True
+            i += 1
 
         # Treat other arguments as files or patterns
         else:
@@ -593,93 +1171,277 @@ def parse_args():
     return args
 
 
+def generate_test_files(output_dir, num_files=5, duration_hours=24):
+    """Generate test ping log files for demonstration purposes."""
+    import os
+    import random
+    import time
+    from datetime import datetime, timedelta
+
+    # Ensure output directory exists
+    if not os.path.exists(output_dir):
+        os.makedirs(output_dir)
+
+    print(f"Generating test files in {output_dir}...")
+
+    # Define device types and their typical ping time ranges
+    device_types = {
+        "ap": {"name": "access_point", "min_ping": 1.5, "max_ping": 8.0, "count": 10},
+        "sw": {"name": "switch", "min_ping": 0.8, "max_ping": 5.0, "count": 10},
+        "gw": {"name": "gateway", "min_ping": 0.5, "max_ping": 3.0, "count": 8},
+        "voip": {"name": "voip_phone", "min_ping": 2.0, "max_ping": 15.0, "count": 30}
+    }
+
+    # Create a 7-day window for test data
+    end_time = datetime.now()
+    start_time = end_time - timedelta(days=7)
+
+    # Generate files for each device type
+    for device_type, properties in device_types.items():
+        # Generate multiple files for each device type
+        for i in range(properties["count"]):
+            # Create a unique device name and IP
+            device_num = random.randint(1, 99)
+            device_name = f"{device_type}-{properties['name']}{device_num:02d}"
+            ip_address = f"192.168.{random.randint(1, 5)}.{random.randint(1, 254)}"
+
+            # Determine if this will be a problem device (10% chance)
+            is_problem_device = random.random() < 0.10
+
+            # Create the file
+            filename = os.path.join(output_dir, f"{device_name}.log")
+            with open(filename, "w") as f:
+                # Write header
+                f.write(f"PING {ip_address} ({ip_address}): 56 data bytes\n")
+
+                # Generate ping data across the time window
+                # Create 10-20 measurement sessions across the 7 days
+                num_sessions = random.randint(10, 20)
+
+                # Distribute sessions across the time window
+                session_times = []
+                for _ in range(num_sessions):
+                    # Random time within the window
+                    random_offset = random.random() * (end_time - start_time).total_seconds()
+                    session_time = start_time + timedelta(seconds=random_offset)
+                    session_times.append(session_time)
+
+                # Sort session times chronologically
+                session_times.sort()
+
+                # For each session, generate a series of pings
+                total_pings = 0
+                total_missing = 0
+
+                for session_idx, session_start in enumerate(session_times):
+                    # Each session lasts 5-30 minutes with pings every 1-5 seconds
+                    session_duration = timedelta(minutes=random.randint(5, 30))
+                    ping_interval = random.randint(1, 5)
+
+                    # Determine ping pattern for this session
+                    pattern = random.choice(["flat", "increasing", "decreasing", "fluctuating"])
+
+                    # For problem devices, increase chance of issues in later sessions
+                    problem_factor = 0.0
+                    if is_problem_device:
+                        # Gradually increase problems over time
+                        problem_factor = min(0.8, session_idx / (num_sessions * 1.5))
+
+                    # Generate pings for this session
+                    current_time = session_start
+                    session_end = session_start + session_duration
+                    seq_num = 0
+
+                    while current_time < session_end:
+                        seq_num += 1
+                        total_pings += 1
+
+                        # Determine if this ping should be dropped (simulate packet loss)
+                        packet_lost = random.random() < problem_factor
+
+                        if packet_lost:
+                            total_missing += 1
+                            # Skip writing this ping (simulating packet loss)
+                            current_time += timedelta(seconds=ping_interval)
+                            continue
+
+                        # Calculate ping time based on pattern
+                        base_ping = random.uniform(properties["min_ping"], properties["max_ping"])
+
+                        if pattern == "flat":
+                            ping_time = base_ping + random.uniform(-0.5, 0.5)
+                        elif pattern == "increasing":
+                            # Gradually increase ping time throughout the session
+                            progress = (current_time - session_start).total_seconds() / session_duration.total_seconds()
+                            ping_time = base_ping + (properties["max_ping"] - base_ping) * progress * 0.8
+                            ping_time += random.uniform(-0.3, 0.3)  # Add small variation
+                        elif pattern == "decreasing":
+                            # Gradually decrease ping time throughout the session
+                            progress = (current_time - session_start).total_seconds() / session_duration.total_seconds()
+                            ping_time = base_ping + (properties["max_ping"] - base_ping) * (1 - progress) * 0.8
+                            ping_time += random.uniform(-0.3, 0.3)  # Add small variation
+                        else:  # fluctuating
+                            # Create a wave pattern
+                            progress = (current_time - session_start).total_seconds() / session_duration.total_seconds()
+                            wave = math.sin(progress * 6 * math.pi)  # Multiple waves during session
+                            ping_time = base_ping + wave * (properties["max_ping"] - properties["min_ping"]) * 0.4
+                            ping_time += random.uniform(-0.2, 0.2)  # Add small variation
+
+                        # For problem devices, occasionally add spikes
+                        if is_problem_device and random.random() < 0.05:
+                            ping_time *= random.uniform(2.0, 5.0)
+
+                        # Ensure minimum ping time
+                        ping_time = max(0.2, ping_time)
+
+                        # Format timestamp
+                        timestamp = current_time.strftime("%a %b %d %H:%M:%S %Y")
+
+                        # Write ping entry
+                        f.write(f"64 bytes from {ip_address}: icmp_seq={seq_num} ttl=64 time={ping_time:.3f} ms\n")
+
+                        # Add timestamp line (like ping -D option)
+                        f.write(f"[{timestamp}]\n")
+
+                        # Move to next ping time
+                        current_time += timedelta(seconds=ping_interval)
+
+                # Write summary statistics
+                packet_loss = (total_missing / total_pings) * 100 if total_pings > 0 else 0
+                f.write(f"\n--- {ip_address} ping statistics ---\n")
+                f.write(f"{total_pings} packets transmitted, {total_pings - total_missing} received, {packet_loss:.1f}% packet loss\n")
+
+    print(f"Generated {sum(p['count'] for p in device_types.values())} test files in {output_dir}")
+    return output_dir
+
+
+def generate_text_plot(results, device_type):
+    """Generate a text-based plot for a device type."""
+    if not results:
+        return "No data available"
+
+    # Get the time range and ping range
+    timestamps = []
+    ping_times = []
+    for result in results:
+        if result.get("has_timestamps"):
+            timestamps.extend(result.get("timestamps", []))
+            ping_times.extend(result.get("times", []))
+
+    if not timestamps or not ping_times:
+        return "No timestamp data available"
+
+    # Calculate ranges
+    time_range = max(timestamps) - min(timestamps)
+    ping_range = max(ping_times) - min(ping_times)
+
+    # Create ASCII plot
+    width = 80
+    height = 20
+    plot = [[' ' for _ in range(width)] for _ in range(height)]
+
+    # Plot points
+    for ts, ping in zip(timestamps, ping_times):
+        x = int((ts - min(timestamps)) / time_range * (width - 1))
+        y = int((ping - min(ping_times)) / ping_range * (height - 1))
+        if 0 <= x < width and 0 <= y < height:
+            plot[y][x] = '.'
+
+    # Add axes
+    for i in range(height):
+        plot[i][0] = '|'
+    for i in range(width):
+        plot[height-1][i] = '-'
+
+    # Convert to string
+    return '\n'.join(''.join(row) for row in plot)
+
+
 def analyze_ping_files():
-    """Analyze ping files according to command-line arguments."""
-    # Parse command-line arguments
+    """Main function to analyze ping files."""
     args = parse_args()
-    output_file = args["output_file"]
 
-    # Check if we should start a ping
+    # Handle test file generation
+    if args["generate_test_files"]:
+        generate_test_files("test_ping_files")
+        print("Test files generated in test_ping_files/")
+        if not args["files"] and not args["pdf_output"] and not args["visualize"]:
+            return
+
+    # Handle ping command
     if args["ping_target"]:
-        ping_file = start_ping(
+        start_ping(
             args["ping_target"],
-            args["ping_output"],
-            args["ping_count"],
-            args["ping_interval"],
-            not args["no_timestamp"]
+            output_file=args["ping_output"],
+            count=args["ping_count"],
+            interval=args["ping_interval"],
+            use_timestamp=not args["no_timestamp"]
         )
-        # If we're just starting a ping and not analyzing files, exit
-        if not args["files"] and not args["pattern"]:
-            return None
+        return
 
-    # Determine files to analyze
+    # Get files to analyze
     if args["files"]:
-        # User specified files or patterns directly
+        # Use the files/patterns specified in the command line
         files = get_files_to_analyze(args["files"])
-    elif args["pattern"]:
-        # User specified a pattern
-        files = glob.glob(args["pattern"])
     else:
-        # Default: all ping files in current directory
-        # Look for both .txt and .log files
-        txt_files = glob.glob("*ping*.txt")
-        log_files = glob.glob("*ping*.log")
-        files = txt_files + log_files
+        # Use the default pattern
+        pattern = args["pattern"] if args["pattern"] else "*ping*.txt *ping*.log *.ping"
+        files = get_files_to_analyze(glob.glob(pattern))
 
-    # Filter out non-text files
-    files = [f for f in files if f.endswith(('.txt', '.log'))]
-
-    # Make sure we have files to analyze
     if not files:
-        # If no specific operation was requested, show a helpful message
-        if not args["ping_target"] and not args["output_file"] and not args["pattern"]:
-            print("No ping files to analyze.")
-            print("Run ping-tool -h for a list of all options.")
-            print("\n" + "-" * 80 + "\n")
-            print_usage()
-        else:
-            print("No ping files found to analyze.")
-        return None
+        print("No files found to analyze.")
+        return
 
-    # If we get here, we have files to analyze
-    # Categorize files
-    categories = categorize_ping_files(files)
-    all_results = {}
+    # Parse ping files and extract data
+    results = {}
+    for file in files:
+        result = analyze_ping_file(file)
+        if result:
+            device_name = os.path.splitext(os.path.basename(file))[0]
+            results[device_name] = result
 
-    # Print summary of files found
-    print("=" * 80)
-    print("PING FILES ANALYSIS")
-    print("=" * 80)
+    # Generate visualizations if requested
+    if args["visualize"]:
+        try:
+            visualizations_dir = create_visualization(results)
+            print(f"Visualizations saved to: {visualizations_dir}/")
+        except Exception as e:
+            print(f"Error generating visualizations: {str(e)}")
+            import traceback
+            traceback.print_exc()
 
-    total_files = sum(len(files) for files in categories.values())
-    print(f"Found {total_files} ping files to analyze:")
-    for category, category_files in categories.items():
-        if category_files:
-            print(f"- {category.upper()}: {len(category_files)} files")
-            for file in category_files:
-                print(f"  - {file}")
-    print("=" * 80)
+    # Track if we've generated a custom PDF
+    custom_pdf_generated = False
 
-    # Analyze each category
-    for category, category_files in categories.items():
-        if not category_files:
-            continue
+    # Generate custom PDF report if specified
+    if args["pdf_output"]:
+        try:
+            print(f"Attempting to generate PDF report: {args['pdf_output']}")
+            # Generate PDF with custom name
+            pdf_file = generate_pdf_report(results, args["pdf_output"], "visualizations")
+            print(f"PDF report generated: {args['pdf_output']}")
+            print(f"Visualizations saved to: visualizations/")
+            custom_pdf_generated = True
+        except ImportError as e:
+            print(f"\nRequired library error: {str(e)}")
+            print("To install: pip install markdown weasyprint\n")
+        except Exception as e:
+            print(f"\nError generating PDF report: {str(e)}")
+            import traceback
+            traceback.print_exc()
 
-        print(f"\nANALYZING {category.upper()} PING FILES")
-        print("=" * 80)
+    # Generate summary report (skip PDF if we already generated a custom one)
+    if not args["visualize"] and not custom_pdf_generated:
+        generate_summary_report(results, skip_pdf=custom_pdf_generated)
 
-        category_results = []
-        for file in category_files:
-            results = analyze_ping_file(file)
-            if results:
-                category_results.append(results)
-
-        all_results[category] = category_results
-
-    # Generate summary report
-    generate_summary_report(all_results, output_file)
-
-    return all_results
+    # Output to file if requested
+    if args["output_file"]:
+        orig_stdout = sys.stdout
+        with open(args["output_file"], 'w') as f:
+            sys.stdout = f
+            generate_summary_report(results, skip_pdf=True)  # Always skip PDF when outputting to file
+            sys.stdout = orig_stdout
+        print(f"Report saved to {args['output_file']}")
 
 
 if __name__ == "__main__":
