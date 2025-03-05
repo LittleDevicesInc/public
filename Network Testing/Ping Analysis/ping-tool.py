@@ -825,15 +825,23 @@ def generate_summary_report(all_results, skip_pdf=False):
 
     # Check for consistent performance
     same_avg = True
-    first_avg = next(iter(all_results.values()))[0]["avg_ping_time"] if all_results else None
-    for results in all_results.values():
-        for r in results:
-            if abs(r["avg_ping_time"] - first_avg) > 0.1:  # Allow small floating point differences
-                same_avg = False
-                break
 
-    if same_avg and first_avg is not None:
-        observations.append("1. **Consistent Performance:** All devices showed identical ping performance metrics")
+    # Fix for IndexError: Check if there are any results before accessing them
+    first_avg = None
+    for results_list in all_results.values():
+        if results_list and len(results_list) > 0:
+            first_avg = results_list[0]["avg_ping_time"]
+            break
+
+    if first_avg is not None:
+        for results in all_results.values():
+            for r in results:
+                if abs(r["avg_ping_time"] - first_avg) > 0.1:  # Allow small floating point differences
+                    same_avg = False
+                    break
+
+        if same_avg:
+            observations.append("1. **Consistent Performance:** All devices showed identical ping performance metrics")
 
     # Check if all targets are localhost
     all_localhost = True
@@ -843,7 +851,7 @@ def generate_summary_report(all_results, skip_pdf=False):
                 all_localhost = False
                 break
 
-    if all_localhost:
+    if all_localhost and first_avg is not None:
         observations.append(f"2. **Response Patterns:** The consistent {first_avg:.2f}ms average with {min_ping:.2f}ms min and {max_ping:.2f}ms max across all devices suggests these are localhost tests")
 
     # Check for missing sequences
