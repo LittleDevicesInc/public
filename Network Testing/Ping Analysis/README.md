@@ -4,12 +4,15 @@ A comprehensive tool for initiating ping tests and analyzing ping log files to d
 
 ## Features
 
-- **Ping Testing**: Run ping tests against multiple targets with customizable parameters
-- **Log Analysis**: Analyze ping log files to identify missing sequences and abnormal intervals
-- **Visualization**: Generate visual representations of ping response times
-- **PDF Reporting**: Create detailed PDF reports with network performance metrics
-- **Device Categorization**: Automatically categorize devices (gateways, switches, access points, VoIP phones, hosts)
-- **MAC Address Lookup**: Identify device manufacturers using OUI database
+- **Ping Testing**: Initiates ping tests to specified targets
+- **Log Analysis**: Parses and analyzes ping log files to detect network issues
+- **Visualization**: Creates charts and plots to visualize ping data
+- **PDF Reporting**: Generates comprehensive PDF reports with detailed analysis
+  * Reports now include improved formatting with bullet points for observations
+  * Empty sections are automatically filtered out for cleaner reports
+  * Device categories are clearly separated for better readability
+- **Device Categorization**: Automatically categorizes network devices based on naming patterns
+- **MAC Address Lookup**: Identifies device vendors from MAC addresses
 
 ## Usage
 
@@ -64,3 +67,21 @@ python ping-tool.py --generate-test-files [--num-files <num>] [--duration <hours
 ## License
 
 This project is licensed under the MIT License - see the LICENSE file for details.
+
+## Code Organization and Maintenance
+
+The codebase is organized into several key functional areas:
+
+* **File Parsing**: Functions for reading and parsing ping log files
+* **Analysis**: Functions for analyzing ping data and detecting issues
+* **Reporting**: Functions for generating reports in different formats
+* **Visualization**: Functions for creating visual representations of ping data
+* **Command Line Interface**: Handling of command-line arguments and user interaction
+* **Device Categorization**: Unified system for categorizing network devices
+
+Recent improvements:
+1. **Modernized Argument Parsing**: Replaced custom argument parsing with the standard `argparse` library for better help messages and more robust handling of command-line options.
+2. **Unified Device Categorization**: Implemented a consistent approach to categorizing both ping files and target devices with the `categorize_devices` function, while maintaining backward compatibility.
+3. **Removed Redundant Code**: Identified and documented unused functions to simplify future maintenance.
+
+For maintainers looking to make changes, note that the `generate_pdf_report` function is the primary report generation function used in the tool. The `generate_report` function was unused and has been removed to simplify the codebase.
