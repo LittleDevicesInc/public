@@ -788,6 +788,7 @@ def generate_pdf_report(results, output_file, visualizations_dir=None):
     switches = {}
     access_points = {}
     voip_phones = {}
+    voip_providers = {}  # New category for VoIP providers
     lan_hosts = {}  # LAN hosts (private IP addresses)
     public_hosts = {}  # Public hosts (public IP addresses)
     web_services = {}  # Web services (domains and public web servers)
