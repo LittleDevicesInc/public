@@ -1,5 +1,7 @@
 #!/usr/bin/env python3
 import sys
+import ipaddress
+import argparse
 
 # Check for dependencies before importing them
 try:
@@ -404,73 +406,166 @@ def start_ping(target, output_file=None, count=None, interval=None, use_timestam
         return None
 
 
-def categorize_ping_files(files):
-    """Categorize ping files based on naming patterns."""
-    categories = {
-        "mac": [],
-        "ap": [],
-        "gw": [],
-        "switch": [],
-        "fw": [],
-        "host": [],
-        "ip": [],
-        "other": []
-    }
+def categorize_devices(items, item_type='target'):
+    """
+    Unified function to categorize network devices.
+
+    Args:
+        items: List of items to categorize (can be filenames or IP addresses/hostnames)
+        item_type: Type of items to categorize ('target' or 'file')
+
+    Returns:
+        Dictionary of categorized items
+    """
+    # Define standard categories based on item type
+    if item_type == 'target':
+        categories = {
+            'Gateways': [],
+            'Switches': [],
+            'Access Points': [],
+            'VOIP Handsets': [],
+            'Public Hosts': [],
+            'LAN Hosts': []
+        }
+    else:  # file type
+        categories = {
+            'mac': [],
+            'ap': [],
+            'gw': [],
+            'switch': [],
+            'fw': [],
+            'host': [],
+            'ip': [],
+            'other': []
+        }
 
     # IPv4 address pattern
     ip_pattern = r'\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}'
 
-    # Categorize files
-    for file in files:
-        lowercase_name = os.path.basename(file).lower()
+    # Device type identifiers
+    device_types = {
+        'ap': ['ap', 'aps', 'access-point', 'accesspoint', 'access_point'],
+        'gw': ['gw', 'gateway', 'gtw'],
+        'switch': ['switch', 'sw'],
+        'fw': ['fw', 'firewall'],
+        'voip': ['voip', 'phone', 'telephony'],
+        'host': ['host', 'device', 'client']
+    }
 
-        # Check for MAC addresses
-        if is_mac_address_in_filename(file):
-            categories["mac"].append(file)
-            continue
+    # Process each item
+    for item in items:
+        if item_type == 'file':
+            # Process filename
+            lowercase_name = os.path.basename(item).lower()
 
-        # Check for device types with various delimiters
-        # Look for device type identifiers in filenames
-        device_types = {
-            "ap": ["ap", "aps", "access-point", "accesspoint", "access_point"],
-            "gw": ["gw", "gateway", "gtw"],
-            "switch": ["switch", "sw"],
-            "fw": ["fw", "firewall"],
-            "host": ["host", "device", "client"]
-        }
+            # Check for MAC addresses
+            if is_mac_address_in_filename(item):
+                categories['mac'].append(item)
+                continue
 
-        # Check if any device type identifiers are in the filename
-        categorized = False
-        for category, identifiers in device_types.items():
-            # Check if any identifier matches as a word pattern
-            # This handles cases like "ping-ap-123.log" or "ping_ap_123.log"
-            for identifier in identifiers:
-                # Word boundaries or common delimiters
-                patterns = [
-                    fr'\b{identifier}\b',  # Whole word
-                    fr'[_\-\.]{identifier}[_\-\.]',  # With delimiters
-                    fr'^{identifier}[_\-\.]',  # At start with delimiter
-                    fr'[_\-\.]{identifier}$'   # At end with delimiter
-                ]
+            # Check for device types with various delimiters
+            categorized = False
+            for category, identifiers in device_types.items():
+                for identifier in identifiers:
+                    # Word boundaries or common delimiters
+                    patterns = [
+                        fr'\b{identifier}\b',  # Whole word
+                        fr'[_\-\.]{identifier}[_\-\.]',  # With delimiters
+                        fr'^{identifier}[_\-\.]',  # At start with delimiter
+                        fr'[_\-\.]{identifier}$'   # At end with delimiter
+                    ]
 
-                if any(re.search(pattern, lowercase_name) for pattern in patterns):
-                    categories[category].append(file)
-                    categorized = True
+                    if any(re.search(pattern, lowercase_name) for pattern in patterns):
+                        if category in categories:
+                            categories[category].append(item)
+                        else:
+                            # For backward compatibility with old category names
+                            categories['other'].append(item)
+                        categorized = True
+                        break
+
+                if categorized:
                     break
 
-            if categorized:
-                break
+            # If not categorized by device type, check for IP address
+            if not categorized and re.search(ip_pattern, item):
+                categories['ip'].append(item)
+                continue
 
-        # If not categorized by device type, check for IP address
-        if not categorized and re.search(ip_pattern, file):
-            categories["ip"].append(file)
-            continue
+            # If still not categorized, put in "other"
+            if not categorized:
+                categories['other'].append(item)
 
-        # If still not categorized, put in "other"
-        if not categorized:
-            categories["other"].append(file)
+        else:  # target type
+            # Process IP/hostname
+            # Check if it's an IP address
+            if re.match(ip_pattern, item):
+                if is_private_ip(item):
+                    categories['LAN Hosts'].append(item)
+                else:
+                    categories['Public Hosts'].append(item)
+            else:
+                # Try to categorize based on hostname patterns
+                categorized = False
+                for device_type, identifiers in device_types.items():
+                    for identifier in identifiers:
+                        if identifier in item.lower():
+                            if device_type == 'gw':
+                                categories['Gateways'].append(item)
+                            elif device_type == 'switch':
+                                categories['Switches'].append(item)
+                            elif device_type == 'ap':
+                                categories['Access Points'].append(item)
+                            elif device_type == 'voip':
+                                categories['VOIP Handsets'].append(item)
+                            else:
+                                # Default to LAN hosts for other device types
+                                categories['LAN Hosts'].append(item)
+                            categorized = True
+                            break
+                    if categorized:
+                        break
 
-    return categories
+                # If not categorized, assume it's a LAN host
+                if not categorized:
+                    categories['LAN Hosts'].append(item)
+
+    # Remove empty categories
+    return {k: v for k, v in categories.items() if v}
+
+
+# Legacy function for backward compatibility
+def categorize_ping_files(files):
+    """Legacy function that calls the unified categorize_devices function."""
+    return categorize_devices(files, item_type='file')
+
+
+# Legacy function for backward compatibility
+def categorize_targets(targets):
+    """Legacy function for backward compatibility."""
+    categorized = {}
+
+    # Initialize standard categories
+    standard_categories = ['Gateways', 'Switches', 'Access Points', 'VOIP Handsets', 'Public Hosts', 'LAN Hosts']
+    for category in standard_categories:
+        categorized[category] = []
+
+    # Process user-provided categories
+    for category, hosts in targets.items():
+        if category in standard_categories:
+            categorized[category].extend(hosts)
+        elif category == 'Hosts' or category == 'Other':
+            # Categorize hosts using the new function
+            categorized_hosts = categorize_devices(hosts, item_type='target')
+            for host_category, host_list in categorized_hosts.items():
+                if host_category in categorized:
+                    categorized[host_category].extend(host_list)
+        else:
+            # For any custom categories, keep them as is
+            categorized[category] = hosts
+
+    # Remove empty categories
+    return {k: v for k, v in categorized.items() if v}
 
 
 def create_visualization(results, output_dir='visualizations'):
@@ -685,7 +780,8 @@ def generate_pdf_report(results, output_file, visualizations_dir=None):
     switches = {}
     access_points = {}
     voip_phones = {}
-    hosts = {}  # New category for user devices
+    lan_hosts = {}  # LAN hosts (private IP addresses)
+    public_hosts = {}  # Public hosts (public IP addresses)
 
     for device_name, device_data in results.items():
         if 'gateway' in device_name:
@@ -697,8 +793,12 @@ def generate_pdf_report(results, output_file, visualizations_dir=None):
         elif 'voip' in device_name:
             voip_phones[device_name] = device_data
         else:
-            # Anything not matching the above categories is considered a host
-            hosts[device_name] = device_data
+            # For hosts, check if the IP is private or public
+            ip = device_data.get('ip', '')
+            if is_private_ip(ip):
+                lan_hosts[device_name] = device_data
+            else:
+                public_hosts[device_name] = device_data
 
     # Calculate overall statistics
     total_devices = len(results)
@@ -733,15 +833,7 @@ def generate_pdf_report(results, output_file, visualizations_dir=None):
 
         if device_avg_time > high_latency_threshold or packet_loss > high_packet_loss_threshold:
             # Clean up device name for display
-            display_name = device_name
-            if 'gw-gateway' in device_name:
-                display_name = device_name.replace('gw-gateway', 'gateway')
-            elif 'sw-switch' in device_name:
-                display_name = device_name.replace('sw-switch', 'switch')
-            elif 'ap-access_point' in device_name:
-                display_name = device_name.replace('ap-access_point', 'ap')
-            elif 'voip-voip_phone' in device_name:
-                display_name = device_name.replace('voip-voip_phone', 'phone')
+            display_name = clean_device_name(device_name)
 
             issue = []
             if device_avg_time > high_latency_threshold:
@@ -767,14 +859,23 @@ def generate_pdf_report(results, output_file, visualizations_dir=None):
 
 ## Summary
 
-**Total Devices Tested:** {total_devices}
-- {len(gateways)} Gateways
-- {len(switches)} Switches
-- {len(access_points)} Access Points
-- {len(voip_phones)} VoIP Phones
-- {len(hosts)} Hosts
+**Total Devices Tested:** {total_devices}"""
 
-> **Note:** All ping tests were conducted with the `-D` timestamp option for accurate interval analysis.
+    # Only include device types that have devices
+    if len(gateways) > 0:
+        markdown_content += f"\n\n**Gateways:** {len(gateways)}"
+    if len(switches) > 0:
+        markdown_content += f"\n\n**Switches:** {len(switches)}"
+    if len(access_points) > 0:
+        markdown_content += f"\n\n**Access Points:** {len(access_points)}"
+    if len(voip_phones) > 0:
+        markdown_content += f"\n\n**VOIP Handsets:** {len(voip_phones)}"
+    if len(lan_hosts) > 0:
+        markdown_content += f"\n\n**LAN Hosts:** {len(lan_hosts)}"
+    if len(public_hosts) > 0:
+        markdown_content += f"\n\n**Public Hosts:** {len(public_hosts)}"
+
+    markdown_content += f"""
 
 ## Overall Performance
 
@@ -789,121 +890,120 @@ def generate_pdf_report(results, output_file, visualizations_dir=None):
 | Avg Response Time | {avg_time:.2f}ms |
 
 ## Device Performance
+"""
 
+    # Only include sections for device types that have devices
+    if gateways:
+        markdown_content += f"""
 ### Gateways
 
 | Device | IP | Avg (ms) | Min (ms) | Max (ms) | Packet Loss (%) | Pings |
 |--------|------------|---------|---------|---------|--------------|-------|
 """
+        # Add gateway data
+        for device_name, device_data in sorted(gateways.items()):
+            # Clean up device name for display
+            display_name = clean_device_name(device_name)
 
-    # Add gateway data
-    for device_name, device_data in sorted(gateways.items()):
-        # Clean up device name for display
-        display_name = device_name.replace('gw-gateway', 'gateway')
+            avg_time = sum(device_data['times']) / len(device_data['times']) if device_data['times'] else 0
+            min_time = min(device_data['times']) if device_data['times'] else 0
+            max_time = max(device_data['times']) if device_data['times'] else 0
+            packet_loss = device_data.get('packet_loss', 0)
+            markdown_content += f"| {display_name} | {device_data['ip']} | {avg_time:.2f} | {min_time:.2f} | {max_time:.2f} | {packet_loss:.2f} | {len(device_data['times']):,} |\n"
 
-        avg_time = sum(device_data['times']) / len(device_data['times']) if device_data['times'] else 0
-        min_time = min(device_data['times']) if device_data['times'] else 0
-        max_time = max(device_data['times']) if device_data['times'] else 0
-        packet_loss = device_data.get('packet_loss', 0)
-        markdown_content += f"| {display_name} | {device_data['ip']} | {avg_time:.2f} | {min_time:.2f} | {max_time:.2f} | {packet_loss:.2f} | {len(device_data['times']):,} |\n"
-
-    # Add switch data
-    markdown_content += f"""
-
+    # Only include switches section if there are switches
+    if switches:
+        markdown_content += f"""
 ### Switches
 
 | Device | IP | Avg (ms) | Min (ms) | Max (ms) | Packet Loss (%) | Pings |
 |--------|------------|---------|---------|---------|--------------|-------|
 """
+        for device_name, device_data in sorted(switches.items()):
+            # Clean up device name for display
+            display_name = clean_device_name(device_name)
 
-    for device_name, device_data in sorted(switches.items()):
-        # Clean up device name for display
-        display_name = device_name.replace('sw-switch', 'switch')
+            avg_time = sum(device_data['times']) / len(device_data['times']) if device_data['times'] else 0
+            min_time = min(device_data['times']) if device_data['times'] else 0
+            max_time = max(device_data['times']) if device_data['times'] else 0
+            packet_loss = device_data.get('packet_loss', 0)
+            markdown_content += f"| {display_name} | {device_data['ip']} | {avg_time:.2f} | {min_time:.2f} | {max_time:.2f} | {packet_loss:.2f} | {len(device_data['times']):,} |\n"
 
-        avg_time = sum(device_data['times']) / len(device_data['times']) if device_data['times'] else 0
-        min_time = min(device_data['times']) if device_data['times'] else 0
-        max_time = max(device_data['times']) if device_data['times'] else 0
-        packet_loss = device_data.get('packet_loss', 0)
-        markdown_content += f"| {display_name} | {device_data['ip']} | {avg_time:.2f} | {min_time:.2f} | {max_time:.2f} | {packet_loss:.2f} | {len(device_data['times']):,} |\n"
-
-    # Add access point data
-    markdown_content += f"""
-
+    # Only include access points section if there are access points
+    if access_points:
+        markdown_content += f"""
 ### Access Points
 
 | Device | IP | Avg (ms) | Min (ms) | Max (ms) | Packet Loss (%) | Pings |
 |--------|------------|---------|---------|---------|--------------|-------|
 """
+        for device_name, device_data in sorted(access_points.items()):
+            # Clean up device name for display
+            display_name = clean_device_name(device_name)
 
-    for device_name, device_data in sorted(access_points.items()):
-        # Clean up device name for display
-        display_name = device_name.replace('ap-access_point', 'ap')
+            avg_time = sum(device_data['times']) / len(device_data['times']) if device_data['times'] else 0
+            min_time = min(device_data['times']) if device_data['times'] else 0
+            max_time = max(device_data['times']) if device_data['times'] else 0
+            packet_loss = device_data.get('packet_loss', 0)
+            markdown_content += f"| {display_name} | {device_data['ip']} | {avg_time:.2f} | {min_time:.2f} | {max_time:.2f} | {packet_loss:.2f} | {len(device_data['times']):,} |\n"
 
-        avg_time = sum(device_data['times']) / len(device_data['times']) if device_data['times'] else 0
-        min_time = min(device_data['times']) if device_data['times'] else 0
-        max_time = max(device_data['times']) if device_data['times'] else 0
-        packet_loss = device_data.get('packet_loss', 0)
-        markdown_content += f"| {display_name} | {device_data['ip']} | {avg_time:.2f} | {min_time:.2f} | {max_time:.2f} | {packet_loss:.2f} | {len(device_data['times']):,} |\n"
-
-    # Add VoIP phone data
-    voip_total_pings = sum(len(data['times']) for data in voip_phones.values())
-    voip_all_times = []
-    for data in voip_phones.values():
-        voip_all_times.extend(data['times'])
-
-    voip_min_time = min(voip_all_times) if voip_all_times else 0
-    voip_max_time = max(voip_all_times) if voip_all_times else 0
-    voip_avg_time = sum(voip_all_times) / len(voip_all_times) if voip_all_times else 0
-
-    voip_missing = sum(len(data.get('missing_sequences', [])) for data in voip_phones.values())
-
-    # Calculate VoIP packet loss
-    voip_expected_pings = voip_total_pings + voip_missing
-    voip_packet_loss = (voip_missing / voip_expected_pings) * 100 if voip_expected_pings > 0 else 0
-
-    markdown_content += f"""
-
-### VoIP Phones
-
-**Devices tested:** {len(voip_phones)}
-**Total pings:** {voip_total_pings:,}
-**Average response:** {voip_avg_time:.2f}ms
-**Response range:** {voip_min_time:.2f}ms to {voip_max_time:.2f}ms
-**Missing sequences:** {voip_missing}
-**Packet loss:** {voip_packet_loss:.2f}%
+    # Only include VoIP phones section if there are VoIP phones
+    if voip_phones:
+        markdown_content += f"""
+### VOIP Handsets
 
 | Device | IP | Avg (ms) | Min (ms) | Max (ms) | Packet Loss (%) | Pings |
 |--------|------------|---------|---------|---------|--------------|-------|
 """
+        for device_name, device_data in sorted(voip_phones.items()):
+            # Clean up device name for display
+            display_name = clean_device_name(device_name)
 
-    for device_name, device_data in sorted(voip_phones.items()):
-        # Clean up device name for display
-        display_name = device_name.replace('voip-voip_phone', 'phone')
+            avg_time = sum(device_data['times']) / len(device_data['times']) if device_data['times'] else 0
+            min_time = min(device_data['times']) if device_data['times'] else 0
+            max_time = max(device_data['times']) if device_data['times'] else 0
+            packet_loss = device_data.get('packet_loss', 0)
+            markdown_content += f"| {display_name} | {device_data['ip']} | {avg_time:.2f} | {min_time:.2f} | {max_time:.2f} | {packet_loss:.2f} | {len(device_data['times']):,} |\n"
 
-        avg_time = sum(device_data['times']) / len(device_data['times']) if device_data['times'] else 0
-        min_time = min(device_data['times']) if device_data['times'] else 0
-        max_time = max(device_data['times']) if device_data['times'] else 0
-        packet_loss = device_data.get('packet_loss', 0)
-        markdown_content += f"| {display_name} | {device_data['ip']} | {avg_time:.2f} | {min_time:.2f} | {max_time:.2f} | {packet_loss:.2f} | {len(device_data['times']):,} |\n"
-
-    # Add host data (if any)
-    if hosts:
+    # Only include LAN hosts section if there are LAN hosts
+    if lan_hosts:
         markdown_content += f"""
-
-### Hosts
+### LAN Hosts
 
 | Device | IP | MAC Address | Manufacturer | Avg (ms) | Min (ms) | Max (ms) | Packet Loss (%) | Pings |
 |--------|------------|------------|------------|---------|---------|---------|--------------|-------|
 """
+        for device_name, device_data in sorted(lan_hosts.items()):
+            # Clean up device name for display
+            display_name = clean_device_name(device_name)
 
-        for device_name, device_data in sorted(hosts.items()):
             avg_time = sum(device_data['times']) / len(device_data['times']) if device_data['times'] else 0
             min_time = min(device_data['times']) if device_data['times'] else 0
             max_time = max(device_data['times']) if device_data['times'] else 0
             packet_loss = device_data.get('packet_loss', 0)
             mac_address = device_data.get('mac_address', 'Unknown')
             manufacturer = device_data.get('manufacturer', 'Unknown')
-            markdown_content += f"| {device_name} | {device_data['ip']} | {mac_address} | {manufacturer} | {avg_time:.2f} | {min_time:.2f} | {max_time:.2f} | {packet_loss:.2f} | {len(device_data['times']):,} |\n"
+            markdown_content += f"| {display_name} | {device_data['ip']} | {mac_address} | {manufacturer} | {avg_time:.2f} | {min_time:.2f} | {max_time:.2f} | {packet_loss:.2f} | {len(device_data['times']):,} |\n"
+
+    # Only include public hosts section if there are public hosts
+    if public_hosts:
+        markdown_content += f"""
+### Public Hosts
+
+| Device | IP | MAC Address | Manufacturer | Avg (ms) | Min (ms) | Max (ms) | Packet Loss (%) | Pings |
+|--------|------------|------------|------------|---------|---------|---------|--------------|-------|
+"""
+        for device_name, device_data in sorted(public_hosts.items()):
+            # Clean up device name for display
+            display_name = clean_device_name(device_name)
+
+            avg_time = sum(device_data['times']) / len(device_data['times']) if device_data['times'] else 0
+            min_time = min(device_data['times']) if device_data['times'] else 0
+            max_time = max(device_data['times']) if device_data['times'] else 0
+            packet_loss = device_data.get('packet_loss', 0)
+            mac_address = device_data.get('mac_address', 'Unknown')
+            manufacturer = device_data.get('manufacturer', 'Unknown')
+            markdown_content += f"| {display_name} | {device_data['ip']} | {mac_address} | {manufacturer} | {avg_time:.2f} | {min_time:.2f} | {max_time:.2f} | {packet_loss:.2f} | {len(device_data['times']):,} |\n"
 
     # Add visualizations if available
     if visualizations_dir and os.path.exists(visualizations_dir):
@@ -957,7 +1057,7 @@ The following visualizations show ping response times for different device types
 """
     else:
         markdown_content += """
-No critical issues were detected in this analysis. All devices are operating within normal parameters.
+* No critical issues were detected in this analysis. All devices are operating within normal parameters.
 
 ### Recommended Actions
 
@@ -992,15 +1092,11 @@ No critical issues were detected in this analysis. All devices are operating wit
         blockquote {{ background-color: #f9f2ff; border-left: 4px solid #652c90; padding: 10px; margin: 20px 0; }}
     ''', font_config=font_config)
 
-    html.write_pdf(output_file, stylesheets=[css], font_config=font_config)
+    # Generate PDF
+    html.write_pdf(output_file, stylesheets=[css])
 
     # Clean up temporary file
     os.unlink(temp_html_path)
-
-    print(f"Custom PDF report generated: {output_file}")
-
-    if visualizations_dir:
-        print(f"Visualizations saved to: {visualizations_dir}/")
 
     return output_file
 
@@ -1064,7 +1160,7 @@ def generate_summary_report(results, skip_pdf=False):
             print(f"  {name} ({data['ip']}): {avg_time:.2f}ms avg, {len(data['times']):,} pings")
 
     if voip_phones:
-        print(f"\nVoIP Phones ({len(voip_phones)}):")
+        print(f"\nVOIP Handsets ({len(voip_phones)}):")
         for name, data in sorted(voip_phones.items()):
             avg_time = sum(data['times']) / len(data['times']) if data['times'] else 0
             print(f"  {name} ({data['ip']}): {avg_time:.2f}ms avg, {len(data['times']):,} pings")
@@ -1091,112 +1187,106 @@ def generate_summary_report(results, skip_pdf=False):
             traceback.print_exc()
 
 
-def print_usage():
-    """Print usage instructions."""
-    print("Ping Tool")
-    print("=========")
-    print("\nA comprehensive tool for initiating and analyzing ping log files.")
-    print("Detects issues such as missed pings, abnormal response times, and network latency patterns.")
-    print("\nUsage:")
-    print("  ping-tool [options] [files/patterns]")
-    print("\nOptions:")
-    print("  -h, --help                   Show this help message and exit")
-    print("  -o FILE, --output=FILE       Write report to FILE")
-    print("  -p PATTERN, --pattern=PATTERN  Specify file pattern (default: *ping*.txt or *ping*.log)")
-    print("  --ping TARGET                Start a ping to the specified target")
-    print("  --count N                    Number of pings to send (optional)")
-    print("  --interval SEC              Interval between pings in seconds (optional)")
-    print("  --ping-output FILE           Output file for ping results (optional)")
-    print("  --no-timestamp              Don't use -D timestamp option when starting a ping")
-    print("  --pdf FILE                  Generate a PDF report (default: ping_analysis_report.pdf)")
-    print("  --visualize                 Generate visualizations from ping data")
-    print("  --generate-test-files       Generate test ping files for demonstration")
-    print("\nImportant Notes:")
-    print("  - The -D timestamp option is enabled by default and recommended for all pings")
-    print("    as it allows for time series analysis and visualization.")
-    print("  - For best results, always use the --visualize option with the --pdf option")
-    print("    to include visualizations in the PDF report.")
-    print("\nExamples:")
-    print("  ping-tool --ping 8.8.8.8 --count 100")
-    print("  ping-tool --pdf report.pdf ping_logs/*.log")
-    print("  ping-tool --visualize ping_logs/*.log")
-    print("  ping-tool --pdf network_report.pdf --visualize ping_logs/*.log")
-
-
 def parse_args():
-    """Parse command-line arguments."""
+    """Parse command-line arguments using argparse."""
+    parser = argparse.ArgumentParser(
+        description="A comprehensive tool for initiating and analyzing ping log files. "
+                    "Detects issues such as missed pings, abnormal response times, and network latency patterns.",
+        formatter_class=argparse.RawTextHelpFormatter
+    )
+
+    # Output and pattern options
+    parser.add_argument("-o", "--output", metavar="FILE", help="Write report to FILE")
+    parser.add_argument("-p", "--pattern", metavar="PATTERN", help="Specify file pattern (default: *ping*.txt or *ping*.log)")
+
+    # Ping options
+    parser.add_argument("--ping", metavar="TARGET", help="Start a ping to the specified target")
+    parser.add_argument("--count", type=int, metavar="N", help="Number of pings to send (optional)")
+    parser.add_argument("--interval", type=float, metavar="SEC", help="Interval between pings in seconds (optional)")
+    parser.add_argument("--ping-output", metavar="FILE", help="Output file for ping results (optional)")
+    parser.add_argument("--no-timestamp", action="store_true", help="Don't use -D timestamp option when starting a ping")
+
+    # Report and visualization options
+    parser.add_argument("--pdf", metavar="FILE", help="Generate a PDF report (default: ping_analysis_report.pdf)")
+    parser.add_argument("--visualize", action="store_true", help="Generate visualizations from ping data")
+
+    # Other options
+    parser.add_argument("--generate-test-files", action="store_true", help="Generate test ping files for demonstration")
+
+    # Files to analyze (positional arguments)
+    parser.add_argument("files", nargs="*", help="Files or patterns to analyze")
+
+    # Add important notes as epilog
+    parser.epilog = """
+Important Notes:
+  - The -D timestamp option is enabled by default and recommended for all pings
+    as it allows for time series analysis and visualization.
+  - For best results, always use the --visualize option with the --pdf option
+    to include visualizations in the PDF report.
+
+Examples:
+  ping-tool --ping 8.8.8.8 --count 100
+  ping-tool --pdf report.pdf ping_logs/*.log
+  ping-tool --visualize ping_logs/*.log
+  ping-tool --pdf network_report.pdf --visualize ping_logs/*.log
+"""
+
+    # Parse arguments
+    parsed_args = parser.parse_args()
+
+    # Convert to the expected dictionary format for backward compatibility
     args = {
-        "output_file": None,
-        "pattern": None,
-        "files": [],
-        "ping_target": None,
-        "ping_count": None,
-        "ping_interval": None,
-        "ping_output": None,
-        "no_timestamp": False,
-        "generate_test_files": False,
-        "pdf_output": None,
-        "visualize": False
+        "output_file": parsed_args.output,
+        "pattern": parsed_args.pattern,
+        "files": parsed_args.files,
+        "ping_target": parsed_args.ping,
+        "ping_count": parsed_args.count,
+        "ping_interval": parsed_args.interval,
+        "ping_output": parsed_args.ping_output,
+        "no_timestamp": parsed_args.no_timestamp,
+        "generate_test_files": parsed_args.generate_test_files,
+        "pdf_output": parsed_args.pdf,
+        "visualize": parsed_args.visualize
     }
 
-    # Process all arguments
-    i = 1
-    while i < len(sys.argv):
-        arg = sys.argv[i]
-
-        # Handle help flags
-        if arg in ("--help", "-h"):
-            print_usage()
-            sys.exit(0)
-
-        # Handle output file
-        elif arg.startswith("--output="):
-            args["output_file"] = arg.split("=", 1)[1]
-            i += 1
-        elif arg == "-o" and i+1 < len(sys.argv):
-            args["output_file"] = sys.argv[i+1]
-            i += 2
-
-        # Handle pattern
-        elif arg.startswith("--pattern="):
-            args["pattern"] = arg.split("=", 1)[1]
-            i += 1
-        elif arg == "-p" and i+1 < len(sys.argv):
-            args["pattern"] = sys.argv[i+1]
-            i += 2
-
-        # Handle ping command
-        elif arg == "--ping" and i+1 < len(sys.argv):
-            args["ping_target"] = sys.argv[i+1]
-            i += 2
-        elif arg == "--count" and i+1 < len(sys.argv):
-            args["ping_count"] = int(sys.argv[i+1])
-            i += 2
-        elif arg == "--interval" and i+1 < len(sys.argv):
-            args["ping_interval"] = float(sys.argv[i+1])
-            i += 2
-        elif arg == "--ping-output" and i+1 < len(sys.argv):
-            args["ping_output"] = sys.argv[i+1]
-            i += 2
-        elif arg == "--no-timestamp":
-            args["no_timestamp"] = True
-            i += 1
-        elif arg == "--generate-test-files":
-            args["generate_test_files"] = True
-            i += 1
-        elif arg == "--pdf" and i+1 < len(sys.argv):
-            args["pdf_output"] = sys.argv[i+1]
-            i += 2
-        elif arg == "--visualize":
-            args["visualize"] = True
-            i += 1
-
-        # Treat other arguments as files or patterns
-        else:
-            args["files"].append(arg)
-            i += 1
-
     return args
+
+
+def clean_device_name(device_name):
+    """
+    Clean up device names by removing redundant type prefixes.
+    For example: 'voip_phone-VOIP-Austin' becomes 'Austin'
+    """
+    # Define patterns to clean up
+    patterns = [
+        # Common device type prefixes
+        r'^voip_phone-VOIP-', r'^voip-voip_phone-', r'^voip-', r'^voip_phone-',
+        r'^access_point-AP-', r'^ap-access_point-', r'^ap-', r'^access_point-',
+        r'^switch-SW-', r'^sw-switch-', r'^sw-', r'^switch-',
+        r'^gateway-GW-', r'^gw-gateway-', r'^gw-', r'^gateway-',
+        # Standard replacements
+        r'gw-gateway', r'sw-switch', r'ap-access_point', r'voip-voip_phone'
+    ]
+
+    # Apply all the patterns
+    result = device_name
+    for pattern in patterns:
+        result = re.sub(pattern, '', result, flags=re.IGNORECASE)
+
+    # Apply special hostname mappings if needed
+    mappings = {
+        'dns_service-google-dns': 'dns.google.com',
+        'dns_service-comodo-dns': 'dns.quad9.net',
+        'server-db.acme.com': 'db.acme.com',
+        'server-api.oscorp.org': 'api.oscorp.org',
+        'server-mail.wayne.co': 'mail.wayne.co',
+        'server-media.acme.org': 'media.acme.org'
+    }
+
+    if device_name in mappings:
+        return mappings[device_name]
+
+    return result
 
 
 def generate_test_files(output_dir, num_files=5, duration_hours=24):
@@ -1470,6 +1560,17 @@ def analyze_ping_files():
             generate_summary_report(results, skip_pdf=True)  # Always skip PDF when outputting to file
             sys.stdout = orig_stdout
         print(f"Report saved to {args['output_file']}")
+
+
+def is_private_ip(ip):
+    """Check if an IP address is private."""
+    try:
+        # Try to parse the IP address
+        ip_obj = ipaddress.ip_address(ip)
+        return ip_obj.is_private
+    except ValueError:
+        # If it's not a valid IP (e.g., a hostname), assume it's public
+        return False
 
 
 if __name__ == "__main__":
