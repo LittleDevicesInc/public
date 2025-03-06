@@ -2,6 +2,7 @@
 import sys
 import ipaddress
 import argparse
+import subprocess
 
 # Check for dependencies before importing them
 try:
@@ -174,6 +175,13 @@ def analyze_ping_file(filename):
             if mac_in_line:
                 mac_address = mac_in_line.group(0)
                 break
+
+        # If still no MAC address, try ARP lookup if it's a private IP
+        if not mac_address and is_private_ip(target_address):
+            print(f"Attempting to get MAC address for {target_address} using ARP...")
+            mac_address = get_mac_from_ip(target_address)
+            if mac_address:
+                print(f"Found MAC address: {mac_address}")
 
     # Check if the file has timestamp data (using -D option)
     has_timestamps = any(re.search(r'^\[\d+\.\d+\]', line) for line in lines if line.strip())
@@ -1563,14 +1571,64 @@ def analyze_ping_files():
 
 
 def is_private_ip(ip):
-    """Check if an IP address is private."""
+    """
+    Check if an IP address is in one of the specified private subnet ranges:
+    - 10.0.0.0/8 (Class A)
+    - 172.16.0.0/12 (Class B)
+    - 192.168.0.0/16 (Class C)
+    - 169.254.0.0/16 (APIPA)
+    """
     try:
         # Try to parse the IP address
         ip_obj = ipaddress.ip_address(ip)
-        return ip_obj.is_private
+
+        # Check if the IP is in one of the specified private ranges
+        private_networks = [
+            ipaddress.ip_network('10.0.0.0/8'),       # Class A
+            ipaddress.ip_network('172.16.0.0/12'),    # Class B
+            ipaddress.ip_network('192.168.0.0/16'),   # Class C
+            ipaddress.ip_network('169.254.0.0/16')    # APIPA
+        ]
+
+        for network in private_networks:
+            if ip_obj in network:
+                return True
+
+        return False
     except ValueError:
         # If it's not a valid IP (e.g., a hostname), assume it's public
         return False
+
+
+def get_mac_from_ip(ip):
+    """
+    Get MAC address for an IP address using ARP.
+    Only works for IPs on the local network (private IPs).
+
+    Args:
+        ip (str): IP address to look up
+
+    Returns:
+        str: MAC address if found, None otherwise
+    """
+    # Only try ARP for private IPs
+    if not is_private_ip(ip):
+        return None
+
+    try:
+        # Run ARP command to get MAC address
+        result = subprocess.run(['arp', '-n', ip], capture_output=True, text=True, timeout=2)
+
+        # Parse the output
+        if result.returncode == 0:
+            # Look for MAC address in output
+            mac_match = re.search(r'([0-9A-Fa-f]{2}[:-]){5}([0-9A-Fa-f]{2})', result.stdout)
+            if mac_match:
+                return mac_match.group(0)
+    except (subprocess.SubprocessError, OSError) as e:
+        print(f"Error running ARP command: {e}")
+
+    return None
 
 
 if __name__ == "__main__":

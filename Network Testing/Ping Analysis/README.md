@@ -13,6 +13,9 @@ A comprehensive tool for initiating ping tests and analyzing ping log files to d
   * Device categories are clearly separated for better readability
 - **Device Categorization**: Automatically categorizes network devices based on naming patterns
 - **MAC Address Lookup**: Identifies device vendors from MAC addresses
+  * Enhanced OUI lookup for private subnet devices
+  * Supports automatic ARP resolution for local network devices
+  * Focuses on standard private IP ranges (10.0.0.0/8, 172.16.0.0/12, 192.168.0.0/16, 169.254.0.0/16)
 
 ## Usage
 
