@@ -916,48 +916,6 @@ def generate_pdf_report(results, output_file, visualizations_dir=None):
 | Max Response Time | {max_time:.2f}ms |
 | Avg Response Time | {avg_time:.2f}ms |
 
-## Network Performance Guidelines
-
-### LAN (Local Area Network) Thresholds
-For private IP ranges (10.0.0.0/8, 172.16.0.0/12, 192.168.0.0/16, 169.254.0.0/16)
-
-**Latency:**
-- Under 1ms: Excellent
-- 1-5ms: Good
-- 5-10ms: Acceptable
-- Over 10ms: Investigate potential issues
-
-**Packet Loss:**
-- 0%: Optimal
-- 0.1-0.5%: Acceptable
-- Over 0.5%: Investigate immediately
-
-### WAN/Public Services Thresholds
-
-**Latency:**
-- Under 20ms: Excellent (for regional connections)
-- 20-50ms: Good
-- 50-100ms: Acceptable
-- 100-150ms: Borderline
-- Over 150ms: Investigate (unless for very distant connections)
-
-**Packet Loss:**
-- 0%: Optimal
-- 0.1-1%: Acceptable for most applications
-- 1-2.5%: May impact real-time applications (VoIP, video)
-- Over 2.5%: Investigate immediately
-
-### Application-Specific Considerations
-
-**VoIP/Video Conferencing:**
-- Latency: Under 150ms
-- Jitter: Under 30ms
-- Packet Loss: Under 1%
-
-**Web Services:**
-- Latency: Under 300ms
-- Packet Loss: Under 2%
-
 ## Device Performance
 """
 
@@ -966,8 +924,8 @@ For private IP ranges (10.0.0.0/8, 172.16.0.0/12, 192.168.0.0/16, 169.254.0.0/16
         markdown_content += f"""
 ### Gateways
 
-| Device | IP | Avg (ms) | Latency Status | Packet Loss (%) | Loss Status | Pings |
-|--------|------------|---------|--------------|--------------|------------|-------|
+| Device | IP | Pings | Min (ms) | Max (ms) | Avg (ms) | Packet Loss (%) |
+|--------|------------|-------|---------|---------|---------|--------------|
 """
         # Add gateway data
         for device_name, device_data in sorted(gateways.items()):
@@ -983,19 +941,20 @@ For private IP ranges (10.0.0.0/8, 172.16.0.0/12, 192.168.0.0/16, 169.254.0.0/16
             max_time = max(device_data['times']) if device_data['times'] else 0
             packet_loss = device_data.get('packet_loss', 0)
 
-            # Get evaluations
+            # Continue to calculate evaluations for internal use (but don't display)
             latency_status = evaluate_latency(avg_time, is_lan=profile['is_lan'])[1]
             packet_loss_status = evaluate_packet_loss(packet_loss, is_lan=profile['is_lan'])[1]
 
-            markdown_content += f"| {display_name} | {device_data['ip']} | {avg_time:.2f} | {latency_status} | {packet_loss:.2f} | {packet_loss_status} | {len(device_data['times']):,} |\n"
+            # New table format without status columns
+            markdown_content += f"| {display_name} | {device_data['ip']} | {len(device_data['times']):,} | {min_time:.2f} | {max_time:.2f} | {avg_time:.2f} | {packet_loss:.2f} |\n"
 
     # Only include switches section if there are switches
     if switches:
         markdown_content += f"""
 ### Switches
 
-| Device | IP | Avg (ms) | Latency Status | Packet Loss (%) | Loss Status | Pings |
-|--------|------------|---------|--------------|--------------|------------|-------|
+| Device | IP | Pings | Min (ms) | Max (ms) | Avg (ms) | Packet Loss (%) |
+|--------|------------|-------|---------|---------|---------|--------------|
 """
         for device_name, device_data in sorted(switches.items()):
             # Clean up device name for display
@@ -1010,19 +969,20 @@ For private IP ranges (10.0.0.0/8, 172.16.0.0/12, 192.168.0.0/16, 169.254.0.0/16
             max_time = max(device_data['times']) if device_data['times'] else 0
             packet_loss = device_data.get('packet_loss', 0)
 
-            # Get evaluations
+            # Continue to calculate evaluations for internal use (but don't display)
             latency_status = evaluate_latency(avg_time, is_lan=profile['is_lan'])[1]
             packet_loss_status = evaluate_packet_loss(packet_loss, is_lan=profile['is_lan'])[1]
 
-            markdown_content += f"| {display_name} | {device_data['ip']} | {avg_time:.2f} | {latency_status} | {packet_loss:.2f} | {packet_loss_status} | {len(device_data['times']):,} |\n"
+            # New table format without status columns
+            markdown_content += f"| {display_name} | {device_data['ip']} | {len(device_data['times']):,} | {min_time:.2f} | {max_time:.2f} | {avg_time:.2f} | {packet_loss:.2f} |\n"
 
     # Only include access points section if there are access points
     if access_points:
         markdown_content += f"""
 ### Access Points
 
-| Device | IP | Avg (ms) | Latency Status | Packet Loss (%) | Loss Status | Pings |
-|--------|------------|---------|--------------|--------------|------------|-------|
+| Device | IP | Pings | Min (ms) | Max (ms) | Avg (ms) | Packet Loss (%) |
+|--------|------------|-------|---------|---------|---------|--------------|
 """
         for device_name, device_data in sorted(access_points.items()):
             # Clean up device name for display
@@ -1037,19 +997,20 @@ For private IP ranges (10.0.0.0/8, 172.16.0.0/12, 192.168.0.0/16, 169.254.0.0/16
             max_time = max(device_data['times']) if device_data['times'] else 0
             packet_loss = device_data.get('packet_loss', 0)
 
-            # Get evaluations
+            # Continue to calculate evaluations for internal use (but don't display)
             latency_status = evaluate_latency(avg_time, is_lan=profile['is_lan'])[1]
             packet_loss_status = evaluate_packet_loss(packet_loss, is_lan=profile['is_lan'])[1]
 
-            markdown_content += f"| {display_name} | {device_data['ip']} | {avg_time:.2f} | {latency_status} | {packet_loss:.2f} | {packet_loss_status} | {len(device_data['times']):,} |\n"
+            # New table format without status columns
+            markdown_content += f"| {display_name} | {device_data['ip']} | {len(device_data['times']):,} | {min_time:.2f} | {max_time:.2f} | {avg_time:.2f} | {packet_loss:.2f} |\n"
 
     # Only include VoIP providers section if there are VoIP providers
     if voip_providers:
         markdown_content += f"""
 ### VoIP Providers
 
-| Provider | IP | Avg (ms) | Latency Status | Packet Loss (%) | Loss Status | Pings |
-|----------|------------|---------|--------------|--------------|------------|-------|
+| Provider | IP | Pings | Min (ms) | Max (ms) | Avg (ms) | Packet Loss (%) |
+|----------|------------|-------|---------|---------|---------|--------------|
 """
         for device_name, device_data in sorted(voip_providers.items()):
             # Clean up device name for display
@@ -1067,19 +1028,20 @@ For private IP ranges (10.0.0.0/8, 172.16.0.0/12, 192.168.0.0/16, 169.254.0.0/16
             # Get hostname if available
             ip_display = device_data.get('hostname', device_data['ip']) if 'hostname' in device_data else device_data['ip']
 
-            # Get evaluations (VoIP specific)
+            # Continue to calculate evaluations for internal use (but don't display)
             latency_status = evaluate_latency(avg_time, is_lan=False)[1]
             packet_loss_status = evaluate_packet_loss(packet_loss, is_lan=False, is_voip=True)[1]
 
-            markdown_content += f"| {display_name} | {ip_display} | {avg_time:.2f} | {latency_status} | {packet_loss:.2f} | {packet_loss_status} | {len(device_data['times']):,} |\n"
+            # New table format without status columns
+            markdown_content += f"| {display_name} | {ip_display} | {len(device_data['times']):,} | {min_time:.2f} | {max_time:.2f} | {avg_time:.2f} | {packet_loss:.2f} |\n"
 
     # Only include VoIP phones section if there are VoIP phones
     if voip_phones:
         markdown_content += f"""
 ### VOIP Handsets
 
-| Device | IP | Avg (ms) | Latency Status | Packet Loss (%) | Loss Status | Pings |
-|--------|------------|---------|--------------|--------------|------------|-------|
+| Device | IP | Pings | Min (ms) | Max (ms) | Avg (ms) | Packet Loss (%) |
+|--------|------------|-------|---------|---------|---------|--------------|
 """
         for device_name, device_data in sorted(voip_phones.items()):
             # Clean up device name for display
@@ -1094,19 +1056,20 @@ For private IP ranges (10.0.0.0/8, 172.16.0.0/12, 192.168.0.0/16, 169.254.0.0/16
             max_time = max(device_data['times']) if device_data['times'] else 0
             packet_loss = device_data.get('packet_loss', 0)
 
-            # Get evaluations (VoIP specific)
+            # Continue to calculate evaluations for internal use (but don't display)
             latency_status = evaluate_latency(avg_time, is_lan=profile['is_lan'])[1]
             packet_loss_status = evaluate_packet_loss(packet_loss, is_lan=profile['is_lan'], is_voip=True)[1]
 
-            markdown_content += f"| {display_name} | {device_data['ip']} | {avg_time:.2f} | {latency_status} | {packet_loss:.2f} | {packet_loss_status} | {len(device_data['times']):,} |\n"
+            # New table format without status columns
+            markdown_content += f"| {display_name} | {device_data['ip']} | {len(device_data['times']):,} | {min_time:.2f} | {max_time:.2f} | {avg_time:.2f} | {packet_loss:.2f} |\n"
 
     # Add Web Services section if there are any
     if web_services:
         markdown_content += f"""
 ### Web Services
 
-| Service | IP | Avg (ms) | Latency Status | Packet Loss (%) | Loss Status | Pings |
-|---------|------------|---------|--------------|--------------|------------|-------|
+| Service | IP | Pings | Min (ms) | Max (ms) | Avg (ms) | Packet Loss (%) |
+|---------|------------|-------|---------|---------|---------|--------------|
 """
         for device_name, device_data in sorted(web_services.items()):
             # Clean up device name for display
@@ -1124,19 +1087,20 @@ For private IP ranges (10.0.0.0/8, 172.16.0.0/12, 192.168.0.0/16, 169.254.0.0/16
             # Get hostname if available
             ip_display = device_data.get('hostname', device_data['ip']) if 'hostname' in device_data else device_data['ip']
 
-            # Get evaluations (Web specific)
+            # Continue to calculate evaluations for internal use (but don't display)
             latency_status = evaluate_latency(avg_time, is_lan=False)[1]
             packet_loss_status = evaluate_packet_loss(packet_loss, is_lan=False, is_web=True)[1]
 
-            markdown_content += f"| {display_name} | {ip_display} | {avg_time:.2f} | {latency_status} | {packet_loss:.2f} | {packet_loss_status} | {len(device_data['times']):,} |\n"
+            # New table format without status columns
+            markdown_content += f"| {display_name} | {ip_display} | {len(device_data['times']):,} | {min_time:.2f} | {max_time:.2f} | {avg_time:.2f} | {packet_loss:.2f} |\n"
 
     # Only include LAN hosts section if there are LAN hosts
     if lan_hosts:
         markdown_content += f"""
 ### LAN Hosts
 
-| Device | IP | MAC Address | Manufacturer | Avg (ms) | Latency Status | Packet Loss (%) | Loss Status |
-|--------|------------|------------|------------|---------|--------------|--------------|------------|
+| Device | IP | Pings | Min (ms) | Max (ms) | Avg (ms) | Packet Loss (%) |
+|--------|------------|-------|---------|---------|---------|--------------|
 """
         for device_name, device_data in sorted(lan_hosts.items()):
             # Clean up device name for display
@@ -1153,19 +1117,26 @@ For private IP ranges (10.0.0.0/8, 172.16.0.0/12, 192.168.0.0/16, 169.254.0.0/16
             mac_address = device_data.get('mac_address', 'Unknown')
             manufacturer = device_data.get('manufacturer', 'Unknown')
 
-            # Get evaluations (LAN specific)
+            # Combine device name with MAC and manufacturer if available
+            if mac_address != 'Unknown' and manufacturer != 'Unknown':
+                display_name = f"{display_name}<br>MAC: {mac_address}<br>Manufacturer: {manufacturer}"
+            elif mac_address != 'Unknown':
+                display_name = f"{display_name}<br>MAC: {mac_address}"
+
+            # Continue to calculate evaluations for internal use (but don't display)
             latency_status = evaluate_latency(avg_time, is_lan=True)[1]
             packet_loss_status = evaluate_packet_loss(packet_loss, is_lan=True)[1]
 
-            markdown_content += f"| {display_name} | {device_data['ip']} | {mac_address} | {manufacturer} | {avg_time:.2f} | {latency_status} | {packet_loss:.2f} | {packet_loss_status} |\n"
+            # New table format
+            markdown_content += f"| {display_name} | {device_data['ip']} | {len(device_data['times']):,} | {min_time:.2f} | {max_time:.2f} | {avg_time:.2f} | {packet_loss:.2f} |\n"
 
     # Only include public hosts section if there are public hosts
     if public_hosts:
         markdown_content += f"""
 ### Public Hosts
 
-| Device | IP | Avg (ms) | Latency Status | Packet Loss (%) | Loss Status | Pings |
-|--------|------------|---------|--------------|--------------|------------|-------|
+| Device | IP | Pings | Min (ms) | Max (ms) | Avg (ms) | Packet Loss (%) |
+|--------|------------|-------|---------|---------|---------|--------------|
 """
         for device_name, device_data in sorted(public_hosts.items()):
             # Clean up device name for display
@@ -1183,11 +1154,12 @@ For private IP ranges (10.0.0.0/8, 172.16.0.0/12, 192.168.0.0/16, 169.254.0.0/16
             # Get hostname if available
             ip_display = device_data.get('hostname', device_data['ip']) if 'hostname' in device_data else device_data['ip']
 
-            # Get evaluations (WAN specific)
+            # Continue to calculate evaluations for internal use (but don't display)
             latency_status = evaluate_latency(avg_time, is_lan=False)[1]
             packet_loss_status = evaluate_packet_loss(packet_loss, is_lan=False)[1]
 
-            markdown_content += f"| {display_name} | {ip_display} | {avg_time:.2f} | {latency_status} | {packet_loss:.2f} | {packet_loss_status} | {len(device_data['times']):,} |\n"
+            # New table format without status columns
+            markdown_content += f"| {display_name} | {ip_display} | {len(device_data['times']):,} | {min_time:.2f} | {max_time:.2f} | {avg_time:.2f} | {packet_loss:.2f} |\n"
 
     # Add visualizations if available
     if visualizations_dir and os.path.exists(visualizations_dir):
@@ -1235,8 +1207,6 @@ The following visualizations show ping response times for different device types
 3. **Monitor High Latency Devices**: Devices with response times above {high_latency_threshold:.2f}ms (network average: {avg_time:.2f}ms) may indicate local network congestion or hardware issues.
 
 4. **Schedule Maintenance**: Consider scheduling maintenance for the most problematic devices identified above.
-
-5. **Implement Regular Testing**: Set up automated ping tests during both peak and off-peak hours to better identify patterns.
 
 """
     else:
