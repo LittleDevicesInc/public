@@ -829,15 +829,7 @@ def generate_pdf_report(results, output_file, visualizations_dir=None):
 
         if device_avg_time > high_latency_threshold or packet_loss > high_packet_loss_threshold:
             # Clean up device name for display
-            display_name = device_name
-            if 'gw-gateway' in device_name:
-                display_name = device_name.replace('gw-gateway', 'gateway')
-            elif 'sw-switch' in device_name:
-                display_name = device_name.replace('sw-switch', 'switch')
-            elif 'ap-access_point' in device_name:
-                display_name = device_name.replace('ap-access_point', 'ap')
-            elif 'voip-voip_phone' in device_name:
-                display_name = device_name.replace('voip-voip_phone', 'phone')
+            display_name = clean_device_name(device_name)
 
             issue = []
             if device_avg_time > high_latency_threshold:
@@ -905,7 +897,7 @@ def generate_pdf_report(results, output_file, visualizations_dir=None):
         # Add gateway data
         for device_name, device_data in sorted(gateways.items()):
             # Clean up device name for display
-            display_name = device_name.replace('gw-gateway', 'gateway')
+            display_name = clean_device_name(device_name)
 
             avg_time = sum(device_data['times']) / len(device_data['times']) if device_data['times'] else 0
             min_time = min(device_data['times']) if device_data['times'] else 0
@@ -923,7 +915,7 @@ def generate_pdf_report(results, output_file, visualizations_dir=None):
 """
         for device_name, device_data in sorted(switches.items()):
             # Clean up device name for display
-            display_name = device_name.replace('sw-switch', 'switch')
+            display_name = clean_device_name(device_name)
 
             avg_time = sum(device_data['times']) / len(device_data['times']) if device_data['times'] else 0
             min_time = min(device_data['times']) if device_data['times'] else 0
@@ -941,7 +933,7 @@ def generate_pdf_report(results, output_file, visualizations_dir=None):
 """
         for device_name, device_data in sorted(access_points.items()):
             # Clean up device name for display
-            display_name = device_name.replace('ap-access_point', 'ap')
+            display_name = clean_device_name(device_name)
 
             avg_time = sum(device_data['times']) / len(device_data['times']) if device_data['times'] else 0
             min_time = min(device_data['times']) if device_data['times'] else 0
@@ -981,7 +973,7 @@ def generate_pdf_report(results, output_file, visualizations_dir=None):
 """
         for device_name, device_data in sorted(voip_phones.items()):
             # Clean up device name for display
-            display_name = device_name.replace('voip-voip_phone', 'phone')
+            display_name = clean_device_name(device_name)
 
             avg_time = sum(device_data['times']) / len(device_data['times']) if device_data['times'] else 0
             min_time = min(device_data['times']) if device_data['times'] else 0
@@ -998,13 +990,16 @@ def generate_pdf_report(results, output_file, visualizations_dir=None):
 |--------|------------|------------|------------|---------|---------|---------|--------------|-------|
 """
         for device_name, device_data in sorted(hosts.items()):
+            # Clean up device name for display
+            display_name = clean_device_name(device_name)
+
             avg_time = sum(device_data['times']) / len(device_data['times']) if device_data['times'] else 0
             min_time = min(device_data['times']) if device_data['times'] else 0
             max_time = max(device_data['times']) if device_data['times'] else 0
             packet_loss = device_data.get('packet_loss', 0)
             mac_address = device_data.get('mac_address', 'Unknown')
             manufacturer = device_data.get('manufacturer', 'Unknown')
-            markdown_content += f"| {device_name} | {device_data['ip']} | {mac_address} | {manufacturer} | {avg_time:.2f} | {min_time:.2f} | {max_time:.2f} | {packet_loss:.2f} | {len(device_data['times']):,} |\n"
+            markdown_content += f"| {display_name} | {device_data['ip']} | {mac_address} | {manufacturer} | {avg_time:.2f} | {min_time:.2f} | {max_time:.2f} | {packet_loss:.2f} | {len(device_data['times']):,} |\n"
 
     # Add visualizations if available
     if visualizations_dir and os.path.exists(visualizations_dir):
@@ -1251,6 +1246,30 @@ Examples:
     }
 
     return args
+
+
+def clean_device_name(device_name):
+    """
+    Clean up device names by removing redundant type prefixes.
+    For example: 'voip_phone-VOIP-Austin' becomes 'Austin'
+    """
+    # Define patterns to clean up
+    patterns = [
+        # Common device type prefixes
+        r'^voip_phone-VOIP-', r'^voip-voip_phone-', r'^voip-', r'^voip_phone-',
+        r'^access_point-AP-', r'^ap-access_point-', r'^ap-', r'^access_point-',
+        r'^switch-SW-', r'^sw-switch-', r'^sw-', r'^switch-',
+        r'^gateway-GW-', r'^gw-gateway-', r'^gw-', r'^gateway-',
+        # Standard replacements
+        r'gw-gateway', r'sw-switch', r'ap-access_point', r'voip-voip_phone'
+    ]
+
+    # Apply all the patterns
+    result = device_name
+    for pattern in patterns:
+        result = re.sub(pattern, '', result, flags=re.IGNORECASE)
+
+    return result
 
 
 def generate_test_files(output_dir, num_files=5, duration_hours=24):
