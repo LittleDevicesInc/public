@@ -790,16 +790,30 @@ def generate_pdf_report(results, output_file, visualizations_dir=None):
     voip_phones = {}
     lan_hosts = {}  # LAN hosts (private IP addresses)
     public_hosts = {}  # Public hosts (public IP addresses)
+    web_services = {}  # Web services (domains and public web servers)
 
     for device_name, device_data in results.items():
-        if 'gateway' in device_name:
+        # Get device profile for categorization
+        profile = get_device_network_profile(device_name, device_data)
+
+        # Try to get hostname for public IPs
+        if not profile['is_lan'] and 'hostname' not in device_data:
+            hostname = lookup_hostname_for_ip(device_data.get('ip', ''))
+            if hostname:
+                device_data['hostname'] = hostname
+
+        if profile['is_voip_provider']:
+            voip_providers[device_name] = device_data
+        elif 'gateway' in device_name:
             gateways[device_name] = device_data
         elif 'switch' in device_name:
             switches[device_name] = device_data
         elif 'access_point' in device_name:
             access_points[device_name] = device_data
-        elif 'voip' in device_name:
+        elif profile['is_voip_device']:
             voip_phones[device_name] = device_data
+        elif profile['is_web_service']:
+            web_services[device_name] = device_data
         else:
             # For hosts, check if the IP is private or public
             ip = device_data.get('ip', '')
@@ -876,8 +890,12 @@ def generate_pdf_report(results, output_file, visualizations_dir=None):
         markdown_content += f"\n\n**Switches:** {len(switches)}"
     if len(access_points) > 0:
         markdown_content += f"\n\n**Access Points:** {len(access_points)}"
+    if len(voip_providers) > 0:
+        markdown_content += f"\n\n**VoIP Providers:** {len(voip_providers)}"
     if len(voip_phones) > 0:
         markdown_content += f"\n\n**VOIP Handsets:** {len(voip_phones)}"
+    if len(web_services) > 0:
+        markdown_content += f"\n\n**Web Services:** {len(web_services)}"
     if len(lan_hosts) > 0:
         markdown_content += f"\n\n**LAN Hosts:** {len(lan_hosts)}"
     if len(public_hosts) > 0:
@@ -897,6 +915,48 @@ def generate_pdf_report(results, output_file, visualizations_dir=None):
 | Max Response Time | {max_time:.2f}ms |
 | Avg Response Time | {avg_time:.2f}ms |
 
+## Network Performance Guidelines
+
+### LAN (Local Area Network) Thresholds
+For private IP ranges (10.0.0.0/8, 172.16.0.0/12, 192.168.0.0/16, 169.254.0.0/16)
+
+**Latency:**
+- Under 1ms: Excellent
+- 1-5ms: Good
+- 5-10ms: Acceptable
+- Over 10ms: Investigate potential issues
+
+**Packet Loss:**
+- 0%: Optimal
+- 0.1-0.5%: Acceptable
+- Over 0.5%: Investigate immediately
+
+### WAN/Public Services Thresholds
+
+**Latency:**
+- Under 20ms: Excellent (for regional connections)
+- 20-50ms: Good
+- 50-100ms: Acceptable
+- 100-150ms: Borderline
+- Over 150ms: Investigate (unless for very distant connections)
+
+**Packet Loss:**
+- 0%: Optimal
+- 0.1-1%: Acceptable for most applications
+- 1-2.5%: May impact real-time applications (VoIP, video)
+- Over 2.5%: Investigate immediately
+
+### Application-Specific Considerations
+
+**VoIP/Video Conferencing:**
+- Latency: Under 150ms
+- Jitter: Under 30ms
+- Packet Loss: Under 1%
+
+**Web Services:**
+- Latency: Under 300ms
+- Packet Loss: Under 2%
+
 ## Device Performance
 """
 
@@ -905,113 +965,228 @@ def generate_pdf_report(results, output_file, visualizations_dir=None):
         markdown_content += f"""
 ### Gateways
 
-| Device | IP | Avg (ms) | Min (ms) | Max (ms) | Packet Loss (%) | Pings |
-|--------|------------|---------|---------|---------|--------------|-------|
+| Device | IP | Avg (ms) | Latency Status | Packet Loss (%) | Loss Status | Pings |
+|--------|------------|---------|--------------|--------------|------------|-------|
 """
         # Add gateway data
         for device_name, device_data in sorted(gateways.items()):
             # Clean up device name for display
             display_name = clean_device_name(device_name)
 
+            # Get network profile
+            profile = get_device_network_profile(device_name, device_data)
+
+            # Calculate metrics
             avg_time = sum(device_data['times']) / len(device_data['times']) if device_data['times'] else 0
             min_time = min(device_data['times']) if device_data['times'] else 0
             max_time = max(device_data['times']) if device_data['times'] else 0
             packet_loss = device_data.get('packet_loss', 0)
-            markdown_content += f"| {display_name} | {device_data['ip']} | {avg_time:.2f} | {min_time:.2f} | {max_time:.2f} | {packet_loss:.2f} | {len(device_data['times']):,} |\n"
+
+            # Get evaluations
+            latency_status = evaluate_latency(avg_time, is_lan=profile['is_lan'])[1]
+            packet_loss_status = evaluate_packet_loss(packet_loss, is_lan=profile['is_lan'])[1]
+
+            markdown_content += f"| {display_name} | {device_data['ip']} | {avg_time:.2f} | {latency_status} | {packet_loss:.2f} | {packet_loss_status} | {len(device_data['times']):,} |\n"
 
     # Only include switches section if there are switches
     if switches:
         markdown_content += f"""
 ### Switches
 
-| Device | IP | Avg (ms) | Min (ms) | Max (ms) | Packet Loss (%) | Pings |
-|--------|------------|---------|---------|---------|--------------|-------|
+| Device | IP | Avg (ms) | Latency Status | Packet Loss (%) | Loss Status | Pings |
+|--------|------------|---------|--------------|--------------|------------|-------|
 """
         for device_name, device_data in sorted(switches.items()):
             # Clean up device name for display
             display_name = clean_device_name(device_name)
 
+            # Get network profile
+            profile = get_device_network_profile(device_name, device_data)
+
+            # Calculate metrics
             avg_time = sum(device_data['times']) / len(device_data['times']) if device_data['times'] else 0
             min_time = min(device_data['times']) if device_data['times'] else 0
             max_time = max(device_data['times']) if device_data['times'] else 0
             packet_loss = device_data.get('packet_loss', 0)
-            markdown_content += f"| {display_name} | {device_data['ip']} | {avg_time:.2f} | {min_time:.2f} | {max_time:.2f} | {packet_loss:.2f} | {len(device_data['times']):,} |\n"
+
+            # Get evaluations
+            latency_status = evaluate_latency(avg_time, is_lan=profile['is_lan'])[1]
+            packet_loss_status = evaluate_packet_loss(packet_loss, is_lan=profile['is_lan'])[1]
+
+            markdown_content += f"| {display_name} | {device_data['ip']} | {avg_time:.2f} | {latency_status} | {packet_loss:.2f} | {packet_loss_status} | {len(device_data['times']):,} |\n"
 
     # Only include access points section if there are access points
     if access_points:
         markdown_content += f"""
 ### Access Points
 
-| Device | IP | Avg (ms) | Min (ms) | Max (ms) | Packet Loss (%) | Pings |
-|--------|------------|---------|---------|---------|--------------|-------|
+| Device | IP | Avg (ms) | Latency Status | Packet Loss (%) | Loss Status | Pings |
+|--------|------------|---------|--------------|--------------|------------|-------|
 """
         for device_name, device_data in sorted(access_points.items()):
             # Clean up device name for display
             display_name = clean_device_name(device_name)
 
+            # Get network profile
+            profile = get_device_network_profile(device_name, device_data)
+
+            # Calculate metrics
             avg_time = sum(device_data['times']) / len(device_data['times']) if device_data['times'] else 0
             min_time = min(device_data['times']) if device_data['times'] else 0
             max_time = max(device_data['times']) if device_data['times'] else 0
             packet_loss = device_data.get('packet_loss', 0)
-            markdown_content += f"| {display_name} | {device_data['ip']} | {avg_time:.2f} | {min_time:.2f} | {max_time:.2f} | {packet_loss:.2f} | {len(device_data['times']):,} |\n"
+
+            # Get evaluations
+            latency_status = evaluate_latency(avg_time, is_lan=profile['is_lan'])[1]
+            packet_loss_status = evaluate_packet_loss(packet_loss, is_lan=profile['is_lan'])[1]
+
+            markdown_content += f"| {display_name} | {device_data['ip']} | {avg_time:.2f} | {latency_status} | {packet_loss:.2f} | {packet_loss_status} | {len(device_data['times']):,} |\n"
+
+    # Only include VoIP providers section if there are VoIP providers
+    if voip_providers:
+        markdown_content += f"""
+### VoIP Providers
+
+| Provider | IP | Avg (ms) | Latency Status | Packet Loss (%) | Loss Status | Pings |
+|----------|------------|---------|--------------|--------------|------------|-------|
+"""
+        for device_name, device_data in sorted(voip_providers.items()):
+            # Clean up device name for display
+            display_name = clean_device_name(device_name)
+
+            # Get network profile
+            profile = get_device_network_profile(device_name, device_data)
+
+            # Calculate metrics
+            avg_time = sum(device_data['times']) / len(device_data['times']) if device_data['times'] else 0
+            min_time = min(device_data['times']) if device_data['times'] else 0
+            max_time = max(device_data['times']) if device_data['times'] else 0
+            packet_loss = device_data.get('packet_loss', 0)
+
+            # Get hostname if available
+            ip_display = device_data.get('hostname', device_data['ip']) if 'hostname' in device_data else device_data['ip']
+
+            # Get evaluations (VoIP specific)
+            latency_status = evaluate_latency(avg_time, is_lan=False)[1]
+            packet_loss_status = evaluate_packet_loss(packet_loss, is_lan=False, is_voip=True)[1]
+
+            markdown_content += f"| {display_name} | {ip_display} | {avg_time:.2f} | {latency_status} | {packet_loss:.2f} | {packet_loss_status} | {len(device_data['times']):,} |\n"
 
     # Only include VoIP phones section if there are VoIP phones
     if voip_phones:
         markdown_content += f"""
 ### VOIP Handsets
 
-| Device | IP | Avg (ms) | Min (ms) | Max (ms) | Packet Loss (%) | Pings |
-|--------|------------|---------|---------|---------|--------------|-------|
+| Device | IP | Avg (ms) | Latency Status | Packet Loss (%) | Loss Status | Pings |
+|--------|------------|---------|--------------|--------------|------------|-------|
 """
         for device_name, device_data in sorted(voip_phones.items()):
             # Clean up device name for display
             display_name = clean_device_name(device_name)
 
+            # Get network profile
+            profile = get_device_network_profile(device_name, device_data)
+
+            # Calculate metrics
             avg_time = sum(device_data['times']) / len(device_data['times']) if device_data['times'] else 0
             min_time = min(device_data['times']) if device_data['times'] else 0
             max_time = max(device_data['times']) if device_data['times'] else 0
             packet_loss = device_data.get('packet_loss', 0)
-            markdown_content += f"| {display_name} | {device_data['ip']} | {avg_time:.2f} | {min_time:.2f} | {max_time:.2f} | {packet_loss:.2f} | {len(device_data['times']):,} |\n"
+
+            # Get evaluations (VoIP specific)
+            latency_status = evaluate_latency(avg_time, is_lan=profile['is_lan'])[1]
+            packet_loss_status = evaluate_packet_loss(packet_loss, is_lan=profile['is_lan'], is_voip=True)[1]
+
+            markdown_content += f"| {display_name} | {device_data['ip']} | {avg_time:.2f} | {latency_status} | {packet_loss:.2f} | {packet_loss_status} | {len(device_data['times']):,} |\n"
+
+    # Add Web Services section if there are any
+    if web_services:
+        markdown_content += f"""
+### Web Services
+
+| Service | IP | Avg (ms) | Latency Status | Packet Loss (%) | Loss Status | Pings |
+|---------|------------|---------|--------------|--------------|------------|-------|
+"""
+        for device_name, device_data in sorted(web_services.items()):
+            # Clean up device name for display
+            display_name = clean_device_name(device_name)
+
+            # Get network profile
+            profile = get_device_network_profile(device_name, device_data)
+
+            # Calculate metrics
+            avg_time = sum(device_data['times']) / len(device_data['times']) if device_data['times'] else 0
+            min_time = min(device_data['times']) if device_data['times'] else 0
+            max_time = max(device_data['times']) if device_data['times'] else 0
+            packet_loss = device_data.get('packet_loss', 0)
+
+            # Get hostname if available
+            ip_display = device_data.get('hostname', device_data['ip']) if 'hostname' in device_data else device_data['ip']
+
+            # Get evaluations (Web specific)
+            latency_status = evaluate_latency(avg_time, is_lan=False)[1]
+            packet_loss_status = evaluate_packet_loss(packet_loss, is_lan=False, is_web=True)[1]
+
+            markdown_content += f"| {display_name} | {ip_display} | {avg_time:.2f} | {latency_status} | {packet_loss:.2f} | {packet_loss_status} | {len(device_data['times']):,} |\n"
 
     # Only include LAN hosts section if there are LAN hosts
     if lan_hosts:
         markdown_content += f"""
 ### LAN Hosts
 
-| Device | IP | MAC Address | Manufacturer | Avg (ms) | Min (ms) | Max (ms) | Packet Loss (%) | Pings |
-|--------|------------|------------|------------|---------|---------|---------|--------------|-------|
+| Device | IP | MAC Address | Manufacturer | Avg (ms) | Latency Status | Packet Loss (%) | Loss Status |
+|--------|------------|------------|------------|---------|--------------|--------------|------------|
 """
         for device_name, device_data in sorted(lan_hosts.items()):
             # Clean up device name for display
             display_name = clean_device_name(device_name)
 
+            # Get network profile
+            profile = get_device_network_profile(device_name, device_data)
+
+            # Calculate metrics
             avg_time = sum(device_data['times']) / len(device_data['times']) if device_data['times'] else 0
             min_time = min(device_data['times']) if device_data['times'] else 0
             max_time = max(device_data['times']) if device_data['times'] else 0
             packet_loss = device_data.get('packet_loss', 0)
             mac_address = device_data.get('mac_address', 'Unknown')
             manufacturer = device_data.get('manufacturer', 'Unknown')
-            markdown_content += f"| {display_name} | {device_data['ip']} | {mac_address} | {manufacturer} | {avg_time:.2f} | {min_time:.2f} | {max_time:.2f} | {packet_loss:.2f} | {len(device_data['times']):,} |\n"
+
+            # Get evaluations (LAN specific)
+            latency_status = evaluate_latency(avg_time, is_lan=True)[1]
+            packet_loss_status = evaluate_packet_loss(packet_loss, is_lan=True)[1]
+
+            markdown_content += f"| {display_name} | {device_data['ip']} | {mac_address} | {manufacturer} | {avg_time:.2f} | {latency_status} | {packet_loss:.2f} | {packet_loss_status} |\n"
 
     # Only include public hosts section if there are public hosts
     if public_hosts:
         markdown_content += f"""
 ### Public Hosts
 
-| Device | IP | MAC Address | Manufacturer | Avg (ms) | Min (ms) | Max (ms) | Packet Loss (%) | Pings |
-|--------|------------|------------|------------|---------|---------|---------|--------------|-------|
+| Device | IP | Avg (ms) | Latency Status | Packet Loss (%) | Loss Status | Pings |
+|--------|------------|---------|--------------|--------------|------------|-------|
 """
         for device_name, device_data in sorted(public_hosts.items()):
             # Clean up device name for display
             display_name = clean_device_name(device_name)
 
+            # Get network profile
+            profile = get_device_network_profile(device_name, device_data)
+
+            # Calculate metrics
             avg_time = sum(device_data['times']) / len(device_data['times']) if device_data['times'] else 0
             min_time = min(device_data['times']) if device_data['times'] else 0
             max_time = max(device_data['times']) if device_data['times'] else 0
             packet_loss = device_data.get('packet_loss', 0)
-            mac_address = device_data.get('mac_address', 'Unknown')
-            manufacturer = device_data.get('manufacturer', 'Unknown')
-            markdown_content += f"| {display_name} | {device_data['ip']} | {mac_address} | {manufacturer} | {avg_time:.2f} | {min_time:.2f} | {max_time:.2f} | {packet_loss:.2f} | {len(device_data['times']):,} |\n"
+
+            # Get hostname if available
+            ip_display = device_data.get('hostname', device_data['ip']) if 'hostname' in device_data else device_data['ip']
+
+            # Get evaluations (WAN specific)
+            latency_status = evaluate_latency(avg_time, is_lan=False)[1]
+            packet_loss_status = evaluate_packet_loss(packet_loss, is_lan=False)[1]
+
+            markdown_content += f"| {display_name} | {ip_display} | {avg_time:.2f} | {latency_status} | {packet_loss:.2f} | {packet_loss_status} | {len(device_data['times']):,} |\n"
 
     # Add visualizations if available
     if visualizations_dir and os.path.exists(visualizations_dir):
@@ -1627,6 +1802,167 @@ def get_mac_from_ip(ip):
                 return mac_match.group(0)
     except (subprocess.SubprocessError, OSError) as e:
         print(f"Error running ARP command: {e}")
+
+    return None
+
+
+def evaluate_latency(avg_time, is_lan=True):
+    """
+    Evaluate the latency based on thresholds for LAN or WAN/Public IPs.
+
+    Args:
+        avg_time (float): Average ping time in milliseconds
+        is_lan (bool): Whether the device is on the LAN (private IP) or WAN/Public
+
+    Returns:
+        tuple: (status, description) where status is one of 'excellent', 'good', 'acceptable', 'borderline', 'investigate'
+    """
+    if is_lan:
+        # LAN thresholds
+        if avg_time < 1:
+            return ('excellent', 'Excellent (under 1ms)')
+        elif avg_time < 5:
+            return ('good', 'Good (1-5ms)')
+        elif avg_time < 10:
+            return ('acceptable', 'Acceptable (5-10ms)')
+        else:
+            return ('investigate', 'Poor - investigate (over 10ms)')
+    else:
+        # WAN/Public thresholds
+        if avg_time < 20:
+            return ('excellent', 'Excellent (under 20ms)')
+        elif avg_time < 50:
+            return ('good', 'Good (20-50ms)')
+        elif avg_time < 100:
+            return ('acceptable', 'Acceptable (50-100ms)')
+        elif avg_time < 150:
+            return ('borderline', 'Borderline (100-150ms)')
+        else:
+            return ('investigate', 'Poor - investigate (over 150ms)')
+
+
+def evaluate_packet_loss(packet_loss, is_lan=True, is_voip=False, is_web=False):
+    """
+    Evaluate packet loss based on thresholds for different network types.
+
+    Args:
+        packet_loss (float): Packet loss percentage
+        is_lan (bool): Whether the device is on the LAN (private IP) or WAN/Public
+        is_voip (bool): Whether the device is a VoIP service
+        is_web (bool): Whether the device is a web service
+
+    Returns:
+        tuple: (status, description) where status is one of 'optimal', 'acceptable', 'impact', 'investigate'
+    """
+    if is_voip:
+        # VoIP-specific thresholds
+        if packet_loss == 0:
+            return ('optimal', 'Optimal (0%)')
+        elif packet_loss < 1:
+            return ('acceptable', 'Acceptable for VoIP (under 1%)')
+        else:
+            return ('investigate', 'Poor for VoIP - investigate immediately (over 1%)')
+    elif is_web:
+        # Web-specific thresholds
+        if packet_loss == 0:
+            return ('optimal', 'Optimal (0%)')
+        elif packet_loss < 2:
+            return ('acceptable', 'Acceptable for web services (under 2%)')
+        else:
+            return ('investigate', 'Poor for web services - investigate (over 2%)')
+    elif is_lan:
+        # LAN thresholds
+        if packet_loss == 0:
+            return ('optimal', 'Optimal (0%)')
+        elif packet_loss < 0.5:
+            return ('acceptable', 'Acceptable (0.1-0.5%)')
+        else:
+            return ('investigate', 'Poor - investigate immediately (over 0.5%)')
+    else:
+        # WAN/Public thresholds
+        if packet_loss == 0:
+            return ('optimal', 'Optimal (0%)')
+        elif packet_loss < 1:
+            return ('acceptable', 'Acceptable (0.1-1%)')
+        elif packet_loss < 2.5:
+            return ('impact', 'May impact real-time applications (1-2.5%)')
+        else:
+            return ('investigate', 'Poor - investigate immediately (over 2.5%)')
+
+
+def get_device_network_profile(device_name, device_data):
+    """
+    Determine the network profile of a device for appropriate threshold evaluation.
+
+    Args:
+        device_name (str): Name of the device
+        device_data (dict): Device data dictionary
+
+    Returns:
+        dict: Network profile with is_lan, is_voip, is_web flags
+    """
+    ip = device_data.get('ip', '')
+    is_lan = is_private_ip(ip)
+
+    # Check if it's a VoIP provider or service
+    is_voip_provider = ('voip_provider' in device_name.lower() or
+                       'voip-provider' in device_name.lower() or
+                       'voip_service' in device_name.lower())
+
+    # Check if it's a VoIP device (not provider)
+    is_voip_device = ('voip' in device_name.lower() and not is_voip_provider)
+
+    # Check if it's a web service (domain name or public IP)
+    is_web_service = (not is_lan and ('www' in device_name.lower() or
+                                    '.com' in device_name.lower() or
+                                    '.org' in device_name.lower() or
+                                    '.net' in device_name.lower() or
+                                    'web' in device_name.lower() or
+                                    'http' in device_name.lower()))
+
+    return {
+        'is_lan': is_lan,
+        'is_voip_provider': is_voip_provider,
+        'is_voip_device': is_voip_device,
+        'is_web_service': is_web_service
+    }
+
+
+def lookup_hostname_for_ip(ip):
+    """
+    Try to lookup hostname for an IP address.
+    Uses both DNS reverse lookup and whois if available.
+
+    Args:
+        ip (str): IP address to lookup
+
+    Returns:
+        str: Hostname if found, None otherwise
+    """
+    if not ip or is_private_ip(ip):
+        return None
+
+    # Try DNS reverse lookup first
+    try:
+        result = subprocess.run(['host', ip], capture_output=True, text=True, timeout=2)
+        if result.returncode == 0 and 'domain name pointer' in result.stdout:
+            hostname = result.stdout.split('domain name pointer')[-1].strip().rstrip('.')
+            return hostname
+    except (subprocess.SubprocessError, OSError):
+        pass
+
+    # Try whois lookup
+    try:
+        result = subprocess.run(['whois', ip], capture_output=True, text=True, timeout=5)
+        if result.returncode == 0:
+            # Look for common hostname fields in whois output
+            for field in ['NetName:', 'Organization:', 'org-name:', 'descr:']:
+                if field in result.stdout:
+                    line = [l for l in result.stdout.split('\n') if field in l][0]
+                    hostname = line.split(field, 1)[1].strip()
+                    return hostname
+    except (subprocess.SubprocessError, OSError):
+        pass
 
     return None
 
