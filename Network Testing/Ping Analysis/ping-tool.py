@@ -1181,6 +1181,8 @@ The following visualizations show ping response times for different device types
     # Add actionable observations and recommendations based on actual data
     markdown_content += f"""
 
+<div style="page-break-before: always;"></div>
+
 ## Observations and Recommendations
 
 ### Critical Issues Detected
